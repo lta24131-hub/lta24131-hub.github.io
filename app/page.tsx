@@ -8,6 +8,7 @@ import {
   Palette,
   PanelsTopLeft,
   RefreshCw,
+  RotateCw,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -35,6 +36,7 @@ type OcctApi = {
 };
 
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
+type UpAxis = "x" | "y" | "z" | "custom";
 
 const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: number; roughness: number; envMapIntensity: number }> = {
   standard: { label: "标准", metalness: 0.08, roughness: 0.5, envMapIntensity: 1 },
@@ -151,8 +153,10 @@ export default function Home() {
   const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number } | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [orientationOpen, setOrientationOpen] = useState(false);
   const [modelColor, setModelColor] = useState("#70ADD6");
   const [materialPreset, setMaterialPreset] = useState<MaterialPresetKey>("standard");
+  const [upAxis, setUpAxis] = useState<UpAxis>("y");
 
   const fitView = useCallback(() => {
     const camera = cameraRef.current;
@@ -334,7 +338,35 @@ export default function Home() {
     if (gridRef.current) gridRef.current.visible = false;
     setModelInfo(null);
     setAppearanceOpen(false);
+    setOrientationOpen(false);
+    setUpAxis("y");
     setError("");
+  };
+
+  const setModelUpAxis = (axis: Exclude<UpAxis, "custom">) => {
+    const model = modelRef.current;
+    if (!model) return;
+    if (axis === "x") model.rotation.set(0, 0, Math.PI / 2);
+    if (axis === "y") model.rotation.set(0, 0, 0);
+    if (axis === "z") model.rotation.set(-Math.PI / 2, 0, 0);
+    model.updateMatrixWorld(true);
+    setUpAxis(axis);
+    window.requestAnimationFrame(fitView);
+  };
+
+  const rotateModelByQuarter = (axis: "x" | "y" | "z", direction: -1 | 1) => {
+    const model = modelRef.current;
+    if (!model) return;
+    const rotationAxis = axis === "x"
+      ? new THREE.Vector3(1, 0, 0)
+      : axis === "y"
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(0, 0, 1);
+    const rotation = new THREE.Quaternion().setFromAxisAngle(rotationAxis, direction * Math.PI / 2);
+    model.quaternion.premultiply(rotation);
+    model.updateMatrixWorld(true);
+    setUpAxis("custom");
+    window.requestAnimationFrame(fitView);
   };
 
   const openFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -416,6 +448,8 @@ export default function Home() {
 
       scene.add(group);
       modelRef.current = group;
+      setUpAxis("y");
+      setOrientationOpen(false);
       setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount });
       window.setTimeout(fitView, 0);
     } catch (caught) {
@@ -469,7 +503,11 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => setAppearanceOpen((value) => !value)}
+            onClick={() => setAppearanceOpen((value) => {
+              const next = !value;
+              if (next) setOrientationOpen(false);
+              return next;
+            })}
             disabled={!modelInfo}
             className={appearanceOpen ? "active" : ""}
             aria-pressed={appearanceOpen}
@@ -478,6 +516,22 @@ export default function Home() {
             title="颜色和材质"
           >
             <Palette aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setOrientationOpen((value) => {
+              const next = !value;
+              if (next) setAppearanceOpen(false);
+              return next;
+            })}
+            disabled={!modelInfo}
+            className={orientationOpen ? "active" : ""}
+            aria-pressed={orientationOpen}
+            aria-expanded={orientationOpen}
+            aria-label="调整模型方向和坐标轴"
+            title="模型方向"
+          >
+            <RotateCw aria-hidden="true" />
           </button>
         </div>
 
@@ -534,6 +588,53 @@ export default function Home() {
                 ))}
               </div>
             </div>
+          </aside>
+        )}
+
+        {modelInfo && orientationOpen && (
+          <aside className="orientation-panel" aria-label="模型方向和坐标轴">
+            <div className="appearance-heading">
+              <strong>模型方向</strong>
+              <button type="button" onClick={() => setOrientationOpen(false)} aria-label="关闭方向面板">×</button>
+            </div>
+
+            <div className="orientation-section">
+              <div className="appearance-label">
+                <span>图纸中哪根轴朝上</span>
+                <span>{upAxis === "custom" ? "已微调" : `${upAxis.toUpperCase()} 轴`}</span>
+              </div>
+              <div className="axis-presets">
+                {(["x", "y", "z"] as const).map((axis) => (
+                  <button
+                    key={axis}
+                    type="button"
+                    className={upAxis === axis ? "selected" : ""}
+                    onClick={() => setModelUpAxis(axis)}
+                    aria-pressed={upAxis === axis}
+                  >
+                    <span className={`axis-badge ${axis}`}>{axis.toUpperCase()}</span>
+                    <span>轴朝上</span>
+                  </button>
+                ))}
+              </div>
+              <p>模型躺倒时，CAD 图纸通常选择 Z 轴朝上。</p>
+            </div>
+
+            <div className="orientation-section">
+              <div className="appearance-label"><span>每次旋转 90°</span></div>
+              <div className="quarter-turns">
+                {(["x", "y", "z"] as const).flatMap((axis) => ([-1, 1] as const).map((direction) => (
+                  <button key={`${axis}-${direction}`} type="button" onClick={() => rotateModelByQuarter(axis, direction)}>
+                    <span className={`axis-letter ${axis}`}>{axis.toUpperCase()}</span>
+                    <span>{direction === -1 ? "−90°" : "+90°"}</span>
+                  </button>
+                )))}
+              </div>
+            </div>
+
+            <button className="reset-orientation" type="button" onClick={() => setModelUpAxis("y")}>
+              恢复原方向
+            </button>
           </aside>
         )}
 
