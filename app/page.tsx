@@ -25,6 +25,7 @@ import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import { loadCadrumStep } from "@/lib/cadrum-step";
 import { loadLocalStep, type StepQuality } from "@/lib/local-step";
 
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
@@ -149,6 +150,10 @@ async function cacheForOffline(registration: ServiceWorkerRegistration) {
     location.origin + "/step-worker.js?v=11",
     location.origin + "/step-split-worker.js?v=11",
     location.origin + "/step-partition.js?v=11",
+    location.origin + "/cadrum-step-worker.js",
+    location.origin + "/cadrum-step-worker.js?v=12",
+    location.origin + "/cadrum/v1/cadrum_local_preview-ddf094990a106c75.js",
+    location.origin + "/cadrum/v1/cadrum_local_preview-ddf094990a106c75_bg.wasm",
     location.origin + "/occt/occt-import-js.js",
     location.origin + "/occt/occt-import-js.wasm",
   ]);
@@ -194,6 +199,7 @@ export default function Home() {
   const [loadingStatus, setLoadingStatus] = useState("正在读取文件");
   const [loadingNote, setLoadingNote] = useState("大文件可能需要一点时间");
   const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
+  const [canStopLocalLoad, setCanStopLocalLoad] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number; quality?: LocalStepQuality; partial?: boolean } | null>(null);
@@ -400,16 +406,22 @@ export default function Home() {
   }, [backgroundMode]);
 
   const disposeModel = (model: THREE.Group) => {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
     model.traverse((object) => {
       if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.LineSegments)) return;
-      object.geometry.dispose();
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      materials.forEach((material) => material.dispose());
+      geometries.add(object.geometry);
+      const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+      objectMaterials.forEach((material) => materials.add(material));
     });
+    geometries.forEach((geometry) => geometry.dispose());
+    materials.forEach((material) => material.dispose());
+    model.clear();
   };
 
   const closeModel = () => {
     localAbortRef.current?.abort();
+    setCanStopLocalLoad(false);
     const scene = sceneRef.current;
     const model = modelRef.current;
     if (scene && model) {
@@ -669,11 +681,12 @@ export default function Home() {
     setLoadingNote(stepQuality === "compatibility" && isStep
       ? "整文件兼容读取可能占用较多内存；全程不会上传"
       : stepQuality === "lite" && isStep
-      ? "分批生成较粗网格，边读边显示；全程不会上传"
+      ? "使用快速低精度引擎，只保留外观；全程不会上传"
       : "文件只在本机处理；大文件分批显示，不会上传");
     setLoadingProgress(null);
     const controller = new AbortController();
     localAbortRef.current = controller;
+    setCanStopLocalLoad(true);
     autoFitRef.current = true;
     const group = new THREE.Group();
     group.name = file.name;
@@ -697,7 +710,8 @@ export default function Home() {
       if (isStep) {
         const material = makeMaterial(modelColor, materialPreset, isLargeStep ? false : wireframe);
         try {
-          await loadLocalStep(file, stepQuality, controller.signal, (data) => {
+          const loadStep = stepQuality === "lite" ? loadCadrumStep : loadLocalStep;
+          await loadStep(file, stepQuality, controller.signal, (data) => {
             const positions = new Float32Array(data.positions);
             const indices = data.indexType === "uint16" ? new Uint16Array(data.indices) : new Uint32Array(data.indices);
             if (positions.length < 9 || positions.length % 3 || indices.length < 3 || indices.length % 3) throw new Error("解析结果缺少有效曲面。");
@@ -798,7 +812,10 @@ export default function Home() {
         if (isStep && file.size >= 12 * 1024 * 1024) setCloudCandidate(file);
       }
     } finally {
-      if (localAbortRef.current === controller) localAbortRef.current = null;
+      if (localAbortRef.current === controller) {
+        localAbortRef.current = null;
+        setCanStopLocalLoad(false);
+      }
       setLoading(false);
       setLoadingProgress(null);
     }
@@ -1099,7 +1116,7 @@ export default function Home() {
                 <span style={{ width: `${loadingProgress}%` }} />
               </div>
             )}
-            {localAbortRef.current && <button className="stop-loading" type="button" onClick={() => localAbortRef.current?.abort()}>停止读取{modelInfo ? "，保留已显示部分" : ""}</button>}
+            {canStopLocalLoad && <button className="stop-loading" type="button" onClick={() => localAbortRef.current?.abort()}>停止读取{modelInfo ? "，保留已显示部分" : ""}</button>}
           </div>
         )}
 
@@ -1109,24 +1126,24 @@ export default function Home() {
               <span className="cloud-dialog-icon"><CloudUpload aria-hidden="true" /></span>
               <h2 id="cloud-dialog-title">这个大文件怎么打开？</h2>
               <p className="cloud-file-name" title={cloudCandidate.name}>{cloudCandidate.name}</p>
-              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。建议分批本地打开，边读边显示；极简预览会降低曲面精细度。</p>
+              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。建议先用快速外观预览；如果手机无法完成，再试边读边显示或云端。</p>
               <div className="privacy-note">
                 <strong>本地读取都不会上传</strong>
-                <span>按曲面分批释放内存，保留原装配位置。只有选择云端时图纸才会上传。整文件兼容方式可能占用较多内存。</span>
+                <span>快速预览会忽略原文件颜色和结构线，只生成低精度外观。只有选择云端时图纸才会上传。</span>
               </div>
               <div className="cloud-dialog-actions">
                 <button
                   type="button"
                   onClick={() => chooseLargeStepMethod("local")}
                 >
-                  分批本地打开
+                  边读边显示
                 </button>
                 <button
                   className="primary"
                   type="button"
                   onClick={() => chooseLargeStepMethod("lite")}
                 >
-                  极简本地预览
+                  快速外观预览
                 </button>
                 <button type="button" onClick={() => chooseLargeStepMethod("compatibility")}>整文件兼容读取</button>
                 <button

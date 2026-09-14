@@ -71,10 +71,10 @@ export async function loadCadrumStep(
     };
     const reportPartProgress = (completed: number, label: string, force = false) => {
       const now = performance.now();
-      if (!force && now - lastProgressAt < 120) return;
+      const refreshModel = force || completed === total || completed % 25 === 0;
+      if (!refreshModel && now - lastProgressAt < 120) return;
       lastProgressAt = now;
       const percent = total > 0 ? Math.min(100, Math.round(completed / total * 100)) : null;
-      const refreshModel = force || completed === total || completed % 25 === 0;
       onProgress(label, percent, refreshModel);
     };
 

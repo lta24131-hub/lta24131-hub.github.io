@@ -1,4 +1,4 @@
-const CACHE_NAME = "step-viewer-v11";
+const CACHE_NAME = "step-viewer-v12";
 const CORE_URLS = [
   "/",
   "/manifest.webmanifest",
@@ -10,6 +10,10 @@ const CORE_URLS = [
   "/step-worker.js?v=11",
   "/step-split-worker.js?v=11",
   "/step-partition.js?v=11",
+  "/cadrum-step-worker.js",
+  "/cadrum-step-worker.js?v=12",
+  "/cadrum/v1/cadrum_local_preview-ddf094990a106c75.js",
+  "/cadrum/v1/cadrum_local_preview-ddf094990a106c75_bg.wasm",
   "/occt/occt-import-js.js",
   "/occt/occt-import-js.wasm"
 ];
