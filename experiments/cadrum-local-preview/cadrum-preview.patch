@@ -21,6 +21,12 @@ index 67cd5b9..4298139 100644
      result.success = true;
      return result;
  }
+@@ -2096,4 +2101,3 @@ std::unique_ptr<TopoDS_Shape> read_step_stream(RustReader& reader) {
+     step_reader.TransferRoots(Message_ProgressRange());
+-    return std::make_unique<TopoDS_Shape>(
+-        try_sew_orphan_faces(step_reader.OneShape(), nullptr));
++    return std::make_unique<TopoDS_Shape>(step_reader.OneShape());
+ }
 diff --git a/src/lib.rs b/src/lib.rs
 index 9b717f5..fd9433b 100644
 --- a/src/lib.rs
