@@ -81,6 +81,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 }
 
 .header-open svg { width: 17px; height: 17px; }
+.header-open:disabled { opacity: .55; cursor: default; }
 
 .offline-pill {
   gap: 7px;
@@ -197,7 +198,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 }
 .color-swatch.selected { border-color: #f3fbff; box-shadow: 0 0 0 2px rgba(72, 190, 247, .55), inset 0 1px 1px rgba(255, 255, 255, .35); }
 
-.material-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.material-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
 .material-grid button {
   display: grid;
   min-width: 0;
@@ -225,20 +226,56 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .material-ball.matte { background: radial-gradient(circle at 34% 28%, #b4d5e5, #6693aa 45%, #385568 100%); box-shadow: inset -3px -4px 7px rgba(0,0,0,.18); }
 .material-ball.metal { background: radial-gradient(circle at 28% 22%, #ffffff 0 7%, #b9e2f4 12%, #527e96 38%, #d2edf8 53%, #29485e 78%, #122a3c 100%); }
 .material-ball.gloss { background: radial-gradient(circle at 30% 20%, #ffffff 0 4%, #a8e4ff 8%, #4d94ba 34%, #224b67 74%, #102638 100%); }
-.material-ball.structure {
+
+.structure-option { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.structure-option > div { display: grid; gap: 3px; }
+.structure-option strong { color: #c8d8e6; font-size: .8125rem; font-weight: 580; }
+.structure-option > div > span { color: #7f98ac; font-size: .7rem; }
+.structure-option > button {
   position: relative;
-  overflow: hidden;
-  background: radial-gradient(circle at 32% 25%, #f0fbff 0 5%, #85bdd9 21%, #4c7c96 62%, #1c3548 100%);
+  width: 48px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid rgba(143, 184, 211, .22);
+  border-radius: 999px;
+  background: rgba(33, 57, 76, .82);
+  cursor: pointer;
 }
-.material-ball.structure::after {
+.structure-option > button > span {
   position: absolute;
-  inset: 2px;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  content: "";
-  background:
-    linear-gradient(31deg, transparent 43%, rgba(5, 20, 30, .78) 45% 48%, transparent 50%),
-    linear-gradient(145deg, transparent 48%, rgba(5, 20, 30, .72) 50% 53%, transparent 55%);
+  background: #9eb3c5;
+  box-shadow: 0 2px 7px rgba(0,0,0,.28);
+  transition: transform .18s ease, background .18s ease;
 }
+.structure-option > button.enabled { border-color: rgba(86, 202, 255, .55); background: rgba(39, 150, 205, .72); }
+.structure-option > button.enabled > span { transform: translateX(20px); background: #eaf9ff; }
+
+.export-light-button {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 15px;
+  padding: 8px 11px;
+  border: 1px solid rgba(83, 195, 248, .26);
+  border-radius: 12px;
+  color: #cfefff;
+  background: rgba(31, 105, 145, .32);
+  text-align: left;
+  cursor: pointer;
+}
+.export-light-button:disabled { opacity: .58; cursor: default; }
+.export-light-button > svg { width: 19px; height: 19px; flex: 0 0 auto; color: #69d3ff; }
+.export-light-button > span { display: grid; gap: 2px; }
+.export-light-button strong { font-size: .78rem; font-weight: 650; }
+.export-light-button small { color: #88a4b7; font-size: .68rem; }
 
 .orientation-panel {
   width: 258px;
@@ -376,8 +413,97 @@ button, label { -webkit-tap-highlight-color: transparent; }
 }
 
 .loading-card strong { margin-top: 5px; font-size: 1rem; }
-.loading-card > span:last-child { color: var(--muted-foreground); font-size: .8125rem; }
+.loading-card .loading-note { max-width: 280px; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.45; text-align: center; }
 .loader { width: 30px; height: 30px; border: 3px solid rgba(89, 194, 247, .2); border-top-color: #5ecbff; border-radius: 50%; animation: spin .8s linear infinite; }
+
+.loading-progress {
+  width: min(68vw, 250px);
+  height: 6px;
+  overflow: hidden;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: rgba(109, 161, 194, .18);
+}
+.loading-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #32b8ff, #6ce0c1);
+  box-shadow: 0 0 14px rgba(67, 198, 255, .45);
+  transition: width .25s ease;
+}
+
+.dialog-backdrop {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(1, 7, 13, .7);
+  backdrop-filter: blur(10px);
+}
+
+.cloud-dialog {
+  width: min(100%, 390px);
+  padding: 24px;
+  border: 1px solid rgba(117, 203, 247, .22);
+  border-radius: 22px;
+  color: #eaf7ff;
+  background: linear-gradient(155deg, rgba(13, 36, 57, .98), rgba(5, 17, 29, .98));
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .52), inset 0 1px 0 rgba(255,255,255,.07);
+  text-align: center;
+}
+.cloud-dialog-icon {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 14px;
+  place-items: center;
+  border: 1px solid rgba(85, 205, 255, .3);
+  border-radius: 16px;
+  color: #6bd4ff;
+  background: rgba(40, 135, 181, .22);
+}
+.cloud-dialog-icon svg { width: 27px; height: 27px; }
+.cloud-dialog h2 { margin: 0; font-size: 1.22rem; letter-spacing: -.02em; }
+.cloud-dialog p { margin: 10px 0 0; color: #9fb6c8; font-size: .86rem; line-height: 1.55; }
+.cloud-dialog .cloud-file-name {
+  overflow: hidden;
+  margin-top: 9px;
+  color: #d6edfa;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.privacy-note {
+  display: grid;
+  gap: 3px;
+  margin-top: 15px;
+  padding: 11px 12px;
+  border: 1px solid rgba(103, 186, 226, .14);
+  border-radius: 12px;
+  background: rgba(36, 80, 108, .22);
+  text-align: left;
+}
+.privacy-note strong { color: #bedceb; font-size: .76rem; }
+.privacy-note span { color: #829eb1; font-size: .71rem; line-height: 1.45; }
+.cloud-dialog-actions { display: grid; grid-template-columns: 1fr 1.55fr; gap: 9px; margin-top: 18px; }
+.cloud-dialog-actions button {
+  min-height: 46px;
+  border: 1px solid rgba(132, 183, 214, .18);
+  border-radius: 13px;
+  color: #b8cad7;
+  background: rgba(48, 78, 99, .35);
+  cursor: pointer;
+}
+.cloud-dialog-actions button.primary {
+  border-color: transparent;
+  color: #04131e;
+  background: linear-gradient(180deg, #70d8ff, #32b8ff);
+  font-weight: 720;
+}
+.cloud-dialog-actions button:active { transform: translateY(1px); }
 
 .error-card {
   position: absolute;

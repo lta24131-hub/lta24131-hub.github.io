@@ -1,4 +1,4 @@
-const CACHE_NAME = "step-viewer-v5";
+const CACHE_NAME = "step-viewer-v7";
 const CORE_URLS = [
   "/",
   "/manifest.webmanifest",
@@ -6,6 +6,7 @@ const CORE_URLS = [
   "/apple-touch-icon.png",
   "/icon-192.png",
   "/icon-512.png",
+  "/step-worker.js",
   "/occt/occt-import-js.js",
   "/occt/occt-import-js.wasm"
 ];
@@ -53,6 +54,7 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith((async () => {

@@ -1,7 +1,7 @@
 {
   "name": "3D 离线看图",
   "short_name": "3D 看图",
-  "description": "在 iPhone 上离线打开、旋转、缩放与平移 STEP、STP、STL、OBJ 三维模型。",
+  "description": "在 iPhone 上离线打开、旋转、缩放与平移 STEP、STP、STL、OBJ、GLB、3MF 三维模型。",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",

@@ -39,7 +39,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build static site
-        run: pnpm build:pages
+        run: |
+          # API routes run on Sites; GitHub Pages hosts the installable front end.
+          # Hide the server-only routes while producing the static Pages build.
+          if [ -d app/api ]; then mv app/api /tmp/step-viewer-api; fi
+          pnpm build:pages
         env:
           GITHUB_PAGES: "true"
 

@@ -1,0 +1,105 @@
+name: Convert large STEP for mobile
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Temporary conversion task ID
+        required: true
+        type: string
+      callback_token:
+        description: One-time callback token
+        required: true
+        type: string
+      api_url:
+        description: Conversion API origin
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: step-convert-${{ inputs.task_id }}
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout converter
+        uses: actions/checkout@v4
+
+      - name: Protect temporary credentials
+        shell: bash
+        run: |
+          echo "::add-mask::${{ inputs.callback_token }}"
+          echo "::add-mask::${{ inputs.task_id }}"
+
+      - name: Install CAD conversion engine
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends freecad-python3 blender
+
+      - name: Download private temporary drawing
+        env:
+          API_URL: ${{ inputs.api_url }}
+          TASK_ID: ${{ inputs.task_id }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          curl --fail --silent --show-error --retry 3 \
+            "$API_URL/api/convert/source/$TASK_ID?token=$CALLBACK_TOKEN" \
+            --output source.step
+          curl --fail --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d '{"progress":12,"message":"云端已收到图纸，正在读取结构"}' \
+            "$API_URL/api/convert/progress/$TASK_ID?token=$CALLBACK_TOKEN"
+
+      - name: Convert STEP to a lightweight surface mesh
+        env:
+          API_URL: ${{ inputs.api_url }}
+          TASK_ID: ${{ inputs.task_id }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          mkdir -p visible-parts
+          freecadcmd .github/scripts/convert_step.py source.step visible-parts
+          curl --fail --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d '{"progress":62,"message":"外观网格已生成，正在删除内部隐藏零件"}' \
+            "$API_URL/api/convert/progress/$TASK_ID?token=$CALLBACK_TOKEN"
+          blender --background --python .github/scripts/keep_visible_parts.py -- visible-parts model.glb
+          curl --fail --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d '{"progress":88,"message":"隐藏零件已删除，正在压缩手机模型"}' \
+            "$API_URL/api/convert/progress/$TASK_ID?token=$CALLBACK_TOKEN"
+
+      - name: Return lightweight model
+        env:
+          API_URL: ${{ inputs.api_url }}
+          TASK_ID: ${{ inputs.task_id }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+        run: |
+          curl --fail --silent --show-error --retry 3 \
+            -H "Content-Type: model/gltf-binary" \
+            --upload-file model.glb \
+            "$API_URL/api/convert/result/$TASK_ID?token=$CALLBACK_TOKEN"
+          curl --fail --silent --show-error \
+            -H "Content-Type: application/json" -d '{}' \
+            "$API_URL/api/convert/finished/$TASK_ID?token=$CALLBACK_TOKEN"
+
+      - name: Report failure and remove runner files
+        if: ${{ always() }}
+        env:
+          API_URL: ${{ inputs.api_url }}
+          TASK_ID: ${{ inputs.task_id }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" != "success" ]; then
+            curl --silent --show-error \
+              -H "Content-Type: application/json" \
+              -d '{"message":"云端转换没有完成，请重新选择文件再试。"}' \
+              "$API_URL/api/convert/failed/$TASK_ID?token=$CALLBACK_TOKEN" || true
+          fi
+          rm -rf source.step visible-parts model.glb
