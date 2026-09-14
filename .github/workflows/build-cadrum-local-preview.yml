@@ -20,6 +20,10 @@ jobs:
         working-directory: experiments/cadrum-local-preview
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare the surface-only CAD engine
+        run: |
+          git clone --depth 1 https://github.com/lzpel/cadrum.git cadrum-src
+          git -C cadrum-src apply ../cadrum-preview.patch
       - name: Build the isolated WASM engine
         run: make deploy-cross
       - name: Upload test engine
@@ -29,4 +33,3 @@ jobs:
           path: experiments/cadrum-local-preview/dist
           if-no-files-found: error
           retention-days: 3
-

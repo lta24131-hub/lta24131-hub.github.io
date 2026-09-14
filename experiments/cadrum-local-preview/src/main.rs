@@ -91,12 +91,8 @@ impl LocalStepSession {
             deflection_angular: angular.clamp(0.2, 2.5),
             relative_linear: true,
         };
-        let mut mesh = Solid::mesh(std::iter::once(&solid), options)
+        let mesh = Solid::mesh_surfaces(std::iter::once(&solid), options)
             .map_err(|e| JsValue::from_str(&format!("mesh part {part_index}: {e:?}")))?;
-
-        // Structure lines are produced later by the viewer when requested. Keeping
-        // them out of this transfer is important for large phone previews.
-        mesh.edges.clear();
 
         let mut glb = Vec::new();
         mesh.write_gltf_binary(&mut glb)
@@ -104,4 +100,3 @@ impl LocalStepSession {
         Ok(glb)
     }
 }
-

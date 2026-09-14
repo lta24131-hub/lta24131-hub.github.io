@@ -1,0 +1,85 @@
+diff --git a/src/ffi.cpp b/src/ffi.cpp
+index 67cd5b9..4298139 100644
+--- a/src/ffi.cpp
++++ b/src/ffi.cpp
+@@ -66,6 +66,7 @@
+ // --- Boolean operations & shape cleanup ---
+ #include <BOPAlgo_CellsBuilder.hxx>
+ #include <ShapeUpgrade_UnifySameDomain.hxx>
++#include <BRepTools.hxx>
+ #include <BRepTools_History.hxx>
+ 
+ // --- Sweep / pipe / loft ---
+@@ -706,6 +707,10 @@ MeshData mesh_shape(const TopoDS_Shape& shape, double linear, double angular, bo
+         global_vertex_offset += nb_nodes;
+     }
+ 
++    // Preview callers only need the copied arrays. Drop OCCT's triangulation
++    // cache before returning so it cannot overlap later Rust/GLB allocations.
++    BRepTools::Clean(shape, true);
++
+     result.success = true;
+     return result;
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+index 9b717f5..fd9433b 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -257,6 +257,9 @@ impl Solid {
+ 	pub fn mesh<'a>(solids: impl IntoIterator<Item = &'a crate::Solid>, options: Tessellation) -> Result<Mesh, Error> {
+ 		<Self as crate::traits::SolidStruct>::mesh(solids, options)
+ 	}
++	pub fn mesh_surfaces<'a>(solids: impl IntoIterator<Item = &'a crate::Solid>, options: Tessellation) -> Result<Mesh, Error> {
++		crate::occt::io::mesh_surfaces(solids, options)
++	}
+ 	#[cfg(feature = "png")]
+ 	pub fn write_multiview_png<W: std::io::Write>(&self, writer: &mut W) -> Result<(), Error> {
+ 		<Self as crate::traits::SolidStruct>::write_multiview_png(self, writer)
+diff --git a/src/occt/io.rs b/src/occt/io.rs
+index 92c9f4e..3787a23 100644
+--- a/src/occt/io.rs
++++ b/src/occt/io.rs
+@@ -162,6 +162,14 @@ pub(super) fn write_brep<'a, W: Write>(solids: impl IntoIterator<Item = &'a Soli
+ }
+ 
+ pub(super) fn mesh<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: crate::traits::Tessellation) -> Result<crate::common::mesh::Mesh, Error> {
++	mesh_impl(solids, options, true)
++}
++
++pub(crate) fn mesh_surfaces<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: crate::traits::Tessellation) -> Result<crate::common::mesh::Mesh, Error> {
++	mesh_impl(solids, options, false)
++}
++
++fn mesh_impl<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: crate::traits::Tessellation, include_edges: bool) -> Result<crate::common::mesh::Mesh, Error> {
+ 	use crate::common::mesh::Mesh;
+ 	use glam::DVec3;
+ 
+@@ -200,16 +208,18 @@ pub(super) fn mesh<'a>(solids: impl IntoIterator<Item = &'a Solid>, options: cra
+ 	// surface triangulation only; edges use `deflection_linear` as an absolute
+ 	// chord here.
+ 	let mut edges: Vec<DVec3> = Vec::new();
+-	for e in ffi::shape_edges(compound.inner()).iter() {
+-		let segs = ffi::edge_approximation_segments(e, options.deflection_linear, options.deflection_angular, options.relative_linear);
+-		if segs.len() < 6 {
+-			continue; // fewer than 2 points — nothing to draw
+-		}
+-		if !edges.is_empty() {
+-			edges.push(DVec3::NAN);
+-		}
+-		for c in segs.chunks_exact(3) {
+-			edges.push(DVec3::new(c[0], c[1], c[2]));
++	if include_edges {
++		for e in ffi::shape_edges(compound.inner()).iter() {
++			let segs = ffi::edge_approximation_segments(e, options.deflection_linear, options.deflection_angular, options.relative_linear);
++			if segs.len() < 6 {
++				continue; // fewer than 2 points — nothing to draw
++			}
++			if !edges.is_empty() {
++				edges.push(DVec3::NAN);
++			}
++			for c in segs.chunks_exact(3) {
++				edges.push(DVec3::new(c[0], c[1], c[2]));
++			}
+ 		}
+ 	}
+ 
