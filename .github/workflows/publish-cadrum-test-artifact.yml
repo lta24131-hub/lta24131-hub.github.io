@@ -1,0 +1,56 @@
+name: Publish experimental STEP engine artifact
+
+on:
+  push:
+    branches: [experiment/cadrum-local-preview]
+    paths:
+      - ".github/workflows/publish-cadrum-test-artifact.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-test-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for the optimized engine build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$REPOSITORY"
+          auth="Authorization: Bearer $GITHUB_TOKEN"
+          run_id=""
+          for attempt in $(seq 1 80); do
+            runs="$(curl --fail --silent --show-error -H "$auth" -H 'Accept: application/vnd.github+json' "$api/actions/workflows/build-cadrum-local-preview.yml/runs?branch=experiment%2Fcadrum-local-preview&per_page=10")"
+            run_id="$(jq -r '[.workflow_runs[] | select(.head_sha == "5c820dd9bb715bf485465fe618827b5ed40e8d26")][0].id // empty' <<<"$runs")"
+            status="$(jq -r --argjson id "${run_id:-0}" '[.workflow_runs[] | select(.id == $id)][0].status // empty' <<<"$runs")"
+            conclusion="$(jq -r --argjson id "${run_id:-0}" '[.workflow_runs[] | select(.id == $id)][0].conclusion // empty' <<<"$runs")"
+            if [[ "$status" == "completed" ]]; then
+              [[ "$conclusion" == "success" ]] || { echo "engine build failed: $conclusion"; exit 1; }
+              break
+            fi
+            sleep 15
+          done
+          [[ -n "$run_id" && "$status" == "completed" ]] || { echo "timed out waiting for engine build"; exit 1; }
+
+          artifacts="$(curl --fail --silent --show-error -H "$auth" -H 'Accept: application/vnd.github+json' "$api/actions/runs/$run_id/artifacts")"
+          artifact_url="$(jq -er '.artifacts[] | select(.name == "cadrum-local-preview-dist") | .archive_download_url' <<<"$artifacts")"
+          curl --fail --location --silent --show-error -H "$auth" -H 'Accept: application/vnd.github+json' "$artifact_url" --output /tmp/engine.zip
+          mkdir /tmp/engine
+          unzip -q /tmp/engine.zip -d /tmp/engine
+
+          git config user.name Codex
+          git config user.email codex@openai.com
+          git checkout --orphan experiment/cadrum-local-preview-dist
+          git rm -rf .
+          cp -a /tmp/engine/. .
+          git add .
+          git commit -m "publish experimental incremental STEP engine"
+          git push --force origin HEAD:experiment/cadrum-local-preview-dist
+
