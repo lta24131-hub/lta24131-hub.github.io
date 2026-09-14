@@ -1,0 +1,32 @@
+name: Build experimental local STEP preview
+
+on:
+  push:
+    branches: [experiment/cadrum-local-preview]
+    paths:
+      - "experiments/cadrum-local-preview/**"
+      - ".github/workflows/build-cadrum-local-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: experiments/cadrum-local-preview
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the isolated WASM engine
+        run: make deploy-cross
+      - name: Upload test engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: cadrum-local-preview-dist
+          path: experiments/cadrum-local-preview/dist
+          if-no-files-found: error
+          retention-days: 3
+
