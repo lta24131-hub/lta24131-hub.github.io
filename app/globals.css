@@ -148,6 +148,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
   box-shadow: 0 22px 60px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .05);
   backdrop-filter: blur(18px);
 }
+.appearance-panel { width: 268px; }
 
 .appearance-heading, .appearance-label, .color-controls { display: flex; align-items: center; }
 .appearance-heading { justify-content: space-between; margin-bottom: 15px; }
@@ -196,7 +197,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 }
 .color-swatch.selected { border-color: #f3fbff; box-shadow: 0 0 0 2px rgba(72, 190, 247, .55), inset 0 1px 1px rgba(255, 255, 255, .35); }
 
-.material-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.material-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .material-grid button {
   display: grid;
   min-width: 0;
@@ -224,6 +225,20 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .material-ball.matte { background: radial-gradient(circle at 34% 28%, #b4d5e5, #6693aa 45%, #385568 100%); box-shadow: inset -3px -4px 7px rgba(0,0,0,.18); }
 .material-ball.metal { background: radial-gradient(circle at 28% 22%, #ffffff 0 7%, #b9e2f4 12%, #527e96 38%, #d2edf8 53%, #29485e 78%, #122a3c 100%); }
 .material-ball.gloss { background: radial-gradient(circle at 30% 20%, #ffffff 0 4%, #a8e4ff 8%, #4d94ba 34%, #224b67 74%, #102638 100%); }
+.material-ball.structure {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle at 32% 25%, #f0fbff 0 5%, #85bdd9 21%, #4c7c96 62%, #1c3548 100%);
+}
+.material-ball.structure::after {
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  content: "";
+  background:
+    linear-gradient(31deg, transparent 43%, rgba(5, 20, 30, .78) 45% 48%, transparent 50%),
+    linear-gradient(145deg, transparent 48%, rgba(5, 20, 30, .72) 50% 53%, transparent 55%);
+}
 
 .orientation-panel {
   width: 258px;

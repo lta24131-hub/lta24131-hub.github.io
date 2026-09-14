@@ -35,7 +35,7 @@ type OcctApi = {
   ReadStepFile: (content: Uint8Array, params: Record<string, unknown> | null) => OcctResult;
 };
 
-type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
+type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss" | "structure";
 type UpAxis = "x" | "y" | "z" | "custom";
 
 const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: number; roughness: number; envMapIntensity: number }> = {
@@ -43,6 +43,7 @@ const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: nu
   matte: { label: "哑光", metalness: 0, roughness: 0.88, envMapIntensity: 0.72 },
   metal: { label: "金属", metalness: 0.9, roughness: 0.26, envMapIntensity: 1.45 },
   gloss: { label: "高光", metalness: 0.12, roughness: 0.12, envMapIntensity: 1.2 },
+  structure: { label: "结构线", metalness: 0.06, roughness: 0.54, envMapIntensity: 1.05 },
 };
 
 const COLOR_SWATCHES = ["#70ADD6", "#D7DEE5", "#F2A65A", "#E85D68", "#54B887", "#735DD0"];
@@ -103,6 +104,44 @@ function makeMaterial(color: string, presetKey: MaterialPresetKey, wireframe: bo
     envMapIntensity: preset.envMapIntensity,
     side: THREE.DoubleSide,
     wireframe,
+  });
+}
+
+function updateStructureLines(model: THREE.Group, visible: boolean, modelColor: string) {
+  const baseColor = new THREE.Color(modelColor);
+  const brightness = baseColor.r * 0.299 + baseColor.g * 0.587 + baseColor.b * 0.114;
+  const lineColor = brightness < 0.3 ? 0xe9f7ff : 0x0a1824;
+
+  model.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+
+    let lines = object.children.find((child) => child.userData.structureLines === true) as THREE.LineSegments | undefined;
+    if (visible && !lines) {
+      const geometry = new THREE.EdgesGeometry(object.geometry, 18);
+      const material = new THREE.LineBasicMaterial({ color: lineColor, transparent: true, opacity: 0.82 });
+      lines = new THREE.LineSegments(geometry, material);
+      lines.name = "结构线";
+      lines.renderOrder = 2;
+      lines.userData.structureLines = true;
+      object.add(lines);
+    }
+
+    if (lines) {
+      lines.visible = visible;
+      const materials = Array.isArray(lines.material) ? lines.material : [lines.material];
+      materials.forEach((material) => {
+        if (material instanceof THREE.LineBasicMaterial) material.color.setHex(lineColor);
+      });
+    }
+
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    materials.forEach((material) => {
+      if (!(material instanceof THREE.MeshStandardMaterial)) return;
+      material.polygonOffset = visible;
+      material.polygonOffsetFactor = visible ? 1 : 0;
+      material.polygonOffsetUnits = visible ? 1 : 0;
+      material.needsUpdate = true;
+    });
   });
 }
 
@@ -316,11 +355,12 @@ export default function Home() {
         material.needsUpdate = true;
       });
     });
+    updateStructureLines(model, materialPreset === "structure", modelColor);
   }, [materialPreset, modelColor]);
 
   const disposeModel = (model: THREE.Group) => {
     model.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
+      if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.LineSegments)) return;
       object.geometry.dispose();
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       materials.forEach((material) => material.dispose());
@@ -446,6 +486,7 @@ export default function Home() {
         group.add(imported);
       }
 
+      updateStructureLines(group, materialPreset === "structure", modelColor);
       scene.add(group);
       modelRef.current = group;
       setUpAxis("y");
@@ -579,7 +620,10 @@ export default function Home() {
                     key={key}
                     className={materialPreset === key ? "selected" : ""}
                     type="button"
-                    onClick={() => setMaterialPreset(key)}
+                    onClick={() => {
+                      setMaterialPreset(key);
+                      if (key === "structure") setWireframe(false);
+                    }}
                     aria-pressed={materialPreset === key}
                   >
                     <span className={`material-ball ${key}`} aria-hidden="true" />
