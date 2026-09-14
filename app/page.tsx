@@ -2,7 +2,6 @@
 
 import {
   Box,
-  CloudUpload,
   Download,
   FolderOpen,
   Maximize2,
@@ -25,37 +24,12 @@ import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
-import { loadCadrumStep } from "@/lib/cadrum-step";
-import { loadLocalStep, type StepQuality } from "@/lib/local-step";
+import { loadLocalStep } from "@/lib/local-step";
 
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
 type UpAxis = "x" | "y" | "z" | "custom";
 type BackgroundMode = "dark" | "light";
-type LocalStepQuality = StepQuality;
-type CloudJobState = "uploading" | "queued" | "converting" | "ready" | "failed";
-
-type PendingCloudJob = {
-  id: string;
-  fileName: string;
-  size: number;
-  taskToken?: string;
-  accessKey?: string;
-};
-
-type CloudStatus = {
-  id: string;
-  fileName: string;
-  size: number;
-  state: CloudJobState;
-  progress: number;
-  message: string;
-  resultSize?: number;
-};
-
 const LARGE_STEP_THRESHOLD = 35 * 1024 * 1024;
-const CLOUD_SITE_ORIGIN = "https://step-viewer-offline-0914.design53648.chatgpt.site";
-const PENDING_CLOUD_JOB_KEY = "step-viewer-pending-cloud-job";
-const CLOUD_ACCESS_KEY_STORAGE = "step-viewer-cloud-access-key";
 const QUARTER_TURNS = (["x", "y", "z"] as const).flatMap((axis) => ([-1, 1] as const).map((direction) => ({ axis, direction })));
 
 const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: number; roughness: number; envMapIntensity: number }> = {
@@ -70,17 +44,6 @@ const COLOR_SWATCHES = ["#70ADD6", "#D7DEE5", "#F2A65A", "#E85D68", "#54B887", "
 function readableSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function isValidPendingCloudJob(value: PendingCloudJob) {
-  return Boolean(
-    value &&
-    /^[0-9a-f-]{36}$/i.test(value.id) &&
-    typeof value.fileName === "string" &&
-    Number.isFinite(value.size) &&
-    ((typeof value.taskToken === "string" && value.taskToken.length >= 64) ||
-      (typeof value.accessKey === "string" && value.accessKey.length > 0))
-  );
 }
 
 function makeMaterial(color: string, presetKey: MaterialPresetKey, wireframe: boolean) {
@@ -147,13 +110,9 @@ async function cacheForOffline(registration: ServiceWorkerRegistration) {
     location.origin + "/icon-192.png",
     location.origin + "/icon-512.png",
     location.origin + "/step-worker.js",
-    location.origin + "/step-worker.js?v=11",
-    location.origin + "/step-split-worker.js?v=11",
-    location.origin + "/step-partition.js?v=11",
-    location.origin + "/cadrum-step-worker.js",
-    location.origin + "/cadrum-step-worker.js?v=12",
-    location.origin + "/cadrum/v1/cadrum_local_preview-ddf094990a106c75.js",
-    location.origin + "/cadrum/v1/cadrum_local_preview-ddf094990a106c75_bg.wasm",
+    location.origin + "/step-worker.js?v=13",
+    location.origin + "/step-split-worker.js?v=13",
+    location.origin + "/step-partition.js?v=13",
     location.origin + "/occt/occt-import-js.js",
     location.origin + "/occt/occt-import-js.wasm",
   ]);
@@ -193,7 +152,7 @@ export default function Home() {
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const localAbortRef = useRef<AbortController | null>(null);
   const autoFitRef = useRef(true);
-  const largeFileDecisionRef = useRef(false);
+  const invalidateRef = useRef<() => void>(() => {});
   const [offlineState, setOfflineState] = useState<"preparing" | "ready" | "failed">("preparing");
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState("正在读取文件");
@@ -202,7 +161,7 @@ export default function Home() {
   const [canStopLocalLoad, setCanStopLocalLoad] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
-  const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number; quality?: LocalStepQuality; partial?: boolean } | null>(null);
+  const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number; partial?: boolean } | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [orientationOpen, setOrientationOpen] = useState(false);
@@ -210,20 +169,7 @@ export default function Home() {
   const [materialPreset, setMaterialPreset] = useState<MaterialPresetKey>("standard");
   const [structureLines, setStructureLines] = useState(false);
   const [upAxis, setUpAxis] = useState<UpAxis>("y");
-  const [cloudCandidate, setCloudCandidate] = useState<File | null>(null);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>("dark");
-
-  useEffect(() => {
-    const parameters = new URLSearchParams(location.hash.replace(/^#/, ""));
-    const activationKey = parameters.get("activate")?.trim();
-    if (!activationKey) return;
-    if (/^[A-Za-z0-9_-]{12,128}$/.test(activationKey)) {
-      localStorage.setItem(CLOUD_ACCESS_KEY_STORAGE, activationKey);
-    }
-    parameters.delete("activate");
-    const remainingHash = parameters.toString();
-    history.replaceState(history.state, "", `${location.pathname}${location.search}${remainingHash ? `#${remainingHash}` : ""}`);
-  }, []);
 
   const fitView = useCallback(() => {
     const camera = cameraRef.current;
@@ -255,6 +201,7 @@ export default function Home() {
       grid.scale.setScalar(Math.max(maxDimension / 10, 0.1));
       grid.visible = true;
     }
+    invalidateRef.current();
   }, []);
 
   useEffect(() => {
@@ -290,12 +237,9 @@ export default function Home() {
     controls.touches.ONE = THREE.TOUCH.ROTATE;
     controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     controlsRef.current = controls;
-    let controlsActive = false;
     controls.addEventListener("start", () => {
-      controlsActive = true;
       autoFitRef.current = false;
     });
-    controls.addEventListener("end", () => { controlsActive = false; });
 
     const hemisphere = new THREE.HemisphereLight(0xccecff, 0x17212b, 2.3);
     scene.add(hemisphere);
@@ -319,28 +263,28 @@ export default function Home() {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height, false);
+      invalidateRef.current();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
     resize();
 
     let frame = 0;
-    let loadingFrame = 0;
     const render = () => {
-      frame = requestAnimationFrame(render);
-      if (localAbortRef.current && !controlsActive) {
-        loadingFrame = (loadingFrame + 1) % 12;
-        if (loadingFrame !== 0) return;
-      } else {
-        loadingFrame = 0;
-      }
+      frame = 0;
       controls.update();
       renderer.render(scene, camera);
     };
-    render();
+    const invalidate = () => {
+      if (!frame) frame = requestAnimationFrame(render);
+    };
+    invalidateRef.current = invalidate;
+    controls.addEventListener("change", invalidate);
+    invalidate();
 
     return () => {
       cancelAnimationFrame(frame);
+      invalidateRef.current = () => {};
       observer.disconnect();
       controls.dispose();
       environment.dispose();
@@ -381,6 +325,7 @@ export default function Home() {
         }
       });
     });
+    invalidateRef.current();
   }, [wireframe]);
 
   useEffect(() => {
@@ -401,6 +346,7 @@ export default function Home() {
       });
     });
     updateStructureLines(model, structureLines, modelColor);
+    invalidateRef.current();
   }, [materialPreset, modelColor, structureLines]);
 
   useEffect(() => {
@@ -415,6 +361,7 @@ export default function Home() {
       material.opacity = backgroundMode === "light" ? 0.34 : 0.2;
       material.needsUpdate = true;
     });
+    invalidateRef.current();
   }, [backgroundMode]);
 
   const disposeModel = (model: THREE.Group) => {
@@ -447,6 +394,7 @@ export default function Home() {
     setOrientationOpen(false);
     setUpAxis("y");
     setError("");
+    invalidateRef.current();
   };
 
   const setModelUpAxis = (axis: Exclude<UpAxis, "custom">) => {
@@ -475,165 +423,6 @@ export default function Home() {
     window.requestAnimationFrame(fitView);
   };
 
-
-  const cloudApiOrigin = () => location.hostname.endsWith("github.io") ? CLOUD_SITE_ORIGIN : location.origin;
-
-  const cloudRequest = async (path: string, credentialHeader: "X-Conversion-Key" | "X-Task-Token", credential: string, init?: RequestInit) => {
-    const headers = new Headers(init?.headers);
-    headers.set(credentialHeader, credential);
-    const response = await fetch(`${cloudApiOrigin()}${path}`, { ...init, headers, cache: "no-store" });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({})) as { error?: string; code?: string };
-      if (body.code === "access_key") localStorage.removeItem(CLOUD_ACCESS_KEY_STORAGE);
-      throw new Error(body.error || `云端处理失败（${response.status}）。`);
-    }
-    return response;
-  };
-
-  const cloudAccessFetch = (path: string, accessKey: string, init?: RequestInit) =>
-    cloudRequest(path, "X-Conversion-Key", accessKey, init);
-
-  const cloudTaskFetch = (path: string, job: PendingCloudJob, init?: RequestInit) => {
-    if (job.taskToken) return cloudRequest(path, "X-Task-Token", job.taskToken, init);
-    return cloudRequest(path, "X-Conversion-Key", job.accessKey ?? "", init);
-  };
-
-  const showCloudResult = async (buffer: ArrayBuffer, job: PendingCloudJob) => {
-    const scene = sceneRef.current;
-    if (!scene) throw new Error("三维视图还没有准备好。");
-
-    const imported = (await new GLTFLoader().parseAsync(buffer, "")).scene;
-    const group = new THREE.Group();
-    group.name = job.fileName;
-    let meshCount = 0;
-    imported.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
-      meshCount += 1;
-      if (!object.geometry.getAttribute("normal")) object.geometry.computeVertexNormals();
-      const originalMaterials = Array.isArray(object.material) ? object.material : [object.material];
-      originalMaterials.forEach((material) => material.dispose());
-      object.material = makeMaterial(modelColor, materialPreset, wireframe);
-    });
-    if (!meshCount) throw new Error("云端生成的模型没有可显示的外观网格。");
-    group.add(imported);
-
-    if (modelRef.current) {
-      scene.remove(modelRef.current);
-      disposeModel(modelRef.current);
-    }
-    updateStructureLines(group, structureLines, modelColor);
-    scene.add(group);
-    modelRef.current = group;
-    setUpAxis("y");
-    setOrientationOpen(false);
-    setModelInfo({ name: job.fileName, size: readableSize(job.size), meshes: meshCount });
-    window.setTimeout(fitView, 0);
-  };
-
-  const waitForCloudConversion = async (job: PendingCloudJob) => {
-    const deadline = Date.now() + 45 * 60 * 1000;
-    while (Date.now() < deadline) {
-      const statusResponse = await cloudTaskFetch(`/api/convert/status/${job.id}`, job);
-      const status = await statusResponse.json() as CloudStatus;
-      setLoadingStatus(status.message || "正在云端转换");
-      setLoadingProgress(Math.min(97, 62 + Math.round(Math.max(0, status.progress) * 0.35)));
-      setLoadingNote("已自动删除内部看不到的部件，完成后原始图纸会从云端删除");
-
-      if (status.state === "failed") throw new Error(status.message || "云端转换没有完成，请重新选择文件再试。");
-      if (status.state === "ready") {
-        setLoadingStatus("正在下载轻量模型");
-        setLoadingProgress(98);
-        const result = await cloudTaskFetch(`/api/convert/result/${job.id}`, job);
-        const buffer = await result.arrayBuffer();
-        setLoadingStatus("正在打开外观模型");
-        setLoadingProgress(99);
-        await showCloudResult(buffer, job);
-        localStorage.removeItem(PENDING_CLOUD_JOB_KEY);
-        void cloudTaskFetch(`/api/convert/task/${job.id}`, job, { method: "DELETE" }).catch(() => undefined);
-        setLoadingProgress(100);
-        return;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 4000));
-    }
-    throw new Error("云端转换等待超时。任务仍在继续，重新打开网站会自动接着等待。");
-  };
-
-  const startCloudConversion = async (file: File) => {
-    const accessKey = localStorage.getItem(CLOUD_ACCESS_KEY_STORAGE)?.trim() || "";
-    if (!accessKey) {
-      setError("这台设备还没有启用云端快速处理，请用专用链接重新打开网站一次。");
-      return;
-    }
-
-    setError("");
-    setLoading(true);
-    setLoadingStatus("正在建立安全上传");
-    setLoadingNote("图纸会临时上传，只用于生成手机外观模型");
-    setLoadingProgress(0);
-    let taskId = "";
-    let queued = false;
-    let pendingJob: PendingCloudJob | null = null;
-
-    try {
-      const createResponse = await cloudAccessFetch("/api/convert/create", accessKey, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName: file.name, size: file.size }),
-      });
-      const task = await createResponse.json() as { id: string; uploadId: string; partSize: number; taskToken: string };
-      taskId = task.id;
-      if (!task.taskToken) throw new Error("云端任务权限创建失败，请稍后重试。");
-      pendingJob = { id: task.id, fileName: file.name, size: file.size, taskToken: task.taskToken };
-      const partCount = Math.ceil(file.size / task.partSize);
-      const parts: Array<{ partNumber: number; etag: string }> = [];
-      let nextPart = 1;
-      let uploadedBytes = 0;
-
-      const uploadWorker = async () => {
-        while (true) {
-          const partNumber = nextPart++;
-          if (partNumber > partCount) return;
-          const start = (partNumber - 1) * task.partSize;
-          const end = Math.min(start + task.partSize, file.size);
-          const response = await cloudTaskFetch(`/api/convert/upload/${task.id}/${partNumber}?uploadId=${encodeURIComponent(task.uploadId)}`, pendingJob!, {
-            method: "PUT",
-            headers: { "Content-Type": "application/octet-stream" },
-            body: file.slice(start, end),
-          });
-          const uploadedPart = await response.json() as { partNumber: number; etag: string };
-          parts.push(uploadedPart);
-          uploadedBytes += end - start;
-          const percent = Math.min(60, Math.round(uploadedBytes / file.size * 60));
-          setLoadingStatus(`正在上传图纸 ${Math.round(uploadedBytes / file.size * 100)}%`);
-          setLoadingProgress(percent);
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(3, partCount) }, () => uploadWorker()));
-
-      setLoadingStatus("上传完成，正在启动云端转换");
-      setLoadingProgress(61);
-      await cloudTaskFetch(`/api/convert/complete/${task.id}`, pendingJob, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uploadId: task.uploadId, parts }),
-      });
-      queued = true;
-      localStorage.setItem(PENDING_CLOUD_JOB_KEY, JSON.stringify(pendingJob));
-      await waitForCloudConversion(pendingJob);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "云端处理失败，请稍后重试。";
-      setError(message);
-      if (!queued && taskId) {
-        const cleanup = pendingJob
-          ? cloudTaskFetch(`/api/convert/task/${taskId}`, pendingJob, { method: "DELETE" })
-          : cloudAccessFetch(`/api/convert/task/${taskId}`, accessKey, { method: "DELETE" });
-        void cleanup.catch(() => undefined);
-      }
-    } finally {
-      setLoading(false);
-      setLoadingProgress(null);
-    }
-  };
 
   const exportLightweightModel = async () => {
     const model = modelRef.current;
@@ -671,10 +460,11 @@ export default function Home() {
     } finally {
       hiddenLines.forEach((line) => { line.visible = true; });
       setExporting(false);
+      invalidateRef.current();
     }
   };
 
-  const openFileLocally = async (file: File, stepQuality: LocalStepQuality = "standard") => {
+  const openFileLocally = async (file: File) => {
     const extension = file.name.split(".").pop()?.toLowerCase();
     if (!extension || !["stp", "step", "stl", "obj", "glb", "3mf"].includes(extension)) {
       setError("请选择 STEP、STP、STL、OBJ、GLB 或 3MF 文件。");
@@ -689,12 +479,8 @@ export default function Home() {
       setStructureLines(false);
       setWireframe(false);
     }
-    setLoadingStatus(stepQuality === "lite" && isStep ? "正在生成极简外观" : "正在读取文件");
-    setLoadingNote(stepQuality === "compatibility" && isStep
-      ? "整文件兼容读取可能占用较多内存；全程不会上传"
-      : stepQuality === "lite" && isStep
-      ? "使用快速低精度引擎，只保留外观；全程不会上传"
-      : "文件只在本机处理；大文件分批显示，不会上传");
+    setLoadingStatus("正在读取文件");
+    setLoadingNote("边读边显示，文件只在本机处理，不会上传");
     setLoadingProgress(null);
     const controller = new AbortController();
     localAbortRef.current = controller;
@@ -715,6 +501,7 @@ export default function Home() {
         modelRef.current = null;
         setModelInfo(null);
         if (gridRef.current) gridRef.current.visible = false;
+        invalidateRef.current();
       }
 
       const materialFor = () => makeMaterial(modelColor, materialPreset, wireframe);
@@ -722,8 +509,7 @@ export default function Home() {
       if (isStep) {
         const material = makeMaterial(modelColor, materialPreset, isLargeStep ? false : wireframe);
         try {
-          const loadStep = stepQuality === "lite" ? loadCadrumStep : loadLocalStep;
-          await loadStep(file, stepQuality, controller.signal, (data) => {
+          await loadLocalStep(file, controller.signal, (data) => {
             const positions = new Float32Array(data.positions);
             const indices = data.indexType === "uint16" ? new Uint16Array(data.indices) : new Uint32Array(data.indices);
             if (positions.length < 9 || positions.length % 3 || indices.length < 3 || indices.length % 3) throw new Error("解析结果缺少有效曲面。");
@@ -737,20 +523,22 @@ export default function Home() {
             } else geometry.computeVertexNormals();
             const mesh = new THREE.Mesh(geometry, material);
             mesh.name = data.name || "STEP 曲面";
+            geometry.computeBoundingBox();
             group.add(mesh);
             meshCount++;
+            invalidateRef.current();
             if (meshCount === 1) {
               scene.add(group);
               modelRef.current = group;
               setUpAxis("y");
-              setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: stepQuality, partial: true });
+              setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, partial: true });
               fitView();
             }
           }, (status, progress, batchDone) => {
             setLoadingStatus(status);
             setLoadingProgress(progress);
             if (batchDone) {
-              setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: stepQuality, partial: true });
+              setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, partial: true });
               if (autoFitRef.current) fitView();
             }
           });
@@ -809,19 +597,19 @@ export default function Home() {
       modelRef.current = group;
       setUpAxis("y");
       setOrientationOpen(false);
-      setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: isStep ? stepQuality : undefined });
+      setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount });
+      invalidateRef.current();
       if (autoFitRef.current) window.setTimeout(fitView, 0);
     } catch (caught) {
       controller.abort();
       const wasCancelled = caught instanceof DOMException && caught.name === "AbortError";
       const message = caught instanceof Error ? caught.message : "文件读取失败，请换一个模型文件重试。";
       if (modelRef.current === group && meshCount) {
-        setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: stepQuality, partial: true });
+        setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, partial: true });
         setError(wasCancelled ? "已停止读取。当前仅显示已加载的部分，不是完整模型。" : `模型未完整读取，已保留能显示的部分。${message}`);
       } else if (!wasCancelled) {
         disposeModel(group);
         setError(`${message} 文件没有上传。`);
-        if (isStep && file.size >= 12 * 1024 * 1024) setCloudCandidate(file);
       }
     } finally {
       if (localAbortRef.current === controller) {
@@ -844,59 +632,11 @@ export default function Home() {
       return;
     }
 
-    if ((extension === "stp" || extension === "step") && file.size >= LARGE_STEP_THRESHOLD) {
-      setCloudCandidate(file);
-      return;
-    }
-
     await openFileLocally(file);
   };
 
-  const chooseLargeStepMethod = (method: "local" | "lite" | "compatibility" | "cloud") => {
-    if (largeFileDecisionRef.current || !cloudCandidate) return;
-    largeFileDecisionRef.current = true;
-    const file = cloudCandidate;
-    setCloudCandidate(null);
-    const task = method === "cloud"
-      ? startCloudConversion(file)
-      : openFileLocally(file, method === "local" ? "standard" : method);
-    void task.finally(() => {
-      largeFileDecisionRef.current = false;
-    });
-  };
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const stored = localStorage.getItem(PENDING_CLOUD_JOB_KEY);
-      if (!stored) return;
-      try {
-        const pending = JSON.parse(stored) as PendingCloudJob;
-        if (!isValidPendingCloudJob(pending)) throw new Error("invalid");
-        setLoading(true);
-        setLoadingStatus("正在恢复云端转换任务");
-        setLoadingNote("无需重新上传，转换完成后会自动打开");
-        setLoadingProgress(62);
-        void waitForCloudConversion(pending)
-          .catch((caught) => {
-            const message = caught instanceof Error ? caught.message : "无法恢复云端转换任务。";
-            setError(message);
-            if (/不存在|已过期|无效|没有完成|权限|启用/.test(message)) localStorage.removeItem(PENDING_CLOUD_JOB_KEY);
-          })
-          .finally(() => {
-            setLoading(false);
-            setLoadingProgress(null);
-          });
-      } catch {
-        localStorage.removeItem(PENDING_CLOUD_JOB_KEY);
-      }
-    }, 0);
-    return () => window.clearTimeout(timer);
-    // This intentionally runs only once to resume a task saved before launch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const offlineLabel = offlineState === "ready" ? "离线可用" : offlineState === "preparing" ? "准备离线功能" : "需联网重试";
-  const fastPreviewStillLoading = loading && modelInfo?.quality === "lite";
+  const stepStillLoading = loading && modelInfo?.partial === true;
 
   return (
     <main className={`app-shell ${backgroundMode === "light" ? "light-background" : "dark-background"}`}>
@@ -1037,13 +777,13 @@ export default function Home() {
             <div className="appearance-section structure-option">
               <div>
                 <strong>显示结构线</strong>
-                <span>{fastPreviewStillLoading ? "快速预览完成后可开启" : "可叠加在当前材质上"}</span>
+                <span>{stepStillLoading ? "读取完成后可开启" : "可叠加在当前材质上"}</span>
               </div>
               <button
                 className={structureLines ? "enabled" : ""}
                 type="button"
                 onClick={() => setStructureLines((value) => !value)}
-                disabled={fastPreviewStillLoading}
+                disabled={stepStillLoading}
                 role="switch"
                 aria-checked={structureLines}
                 aria-label="显示结构线"
@@ -1113,7 +853,7 @@ export default function Home() {
           <div className="empty-state">
             <span className="empty-icon"><Orbit aria-hidden="true" /></span>
             <h1>打开一个三维模型</h1>
-            <p>支持 STEP、STP、STL、OBJ、GLB 和 3MF。大型 STEP 可先在手机打开，也可选择云端轻量化。</p>
+            <p>支持 STEP、STP、STL、OBJ、GLB 和 3MF。选择后自动边读边显示，全程本地处理。</p>
             <button className="open-button" type="button" onClick={() => fileInputRef.current?.click()}>
               <FolderOpen aria-hidden="true" />
               选择文件
@@ -1135,45 +875,6 @@ export default function Home() {
           </div>
         )}
 
-        {cloudCandidate && !loading && (
-          <div className="dialog-backdrop" role="presentation">
-            <section className="cloud-dialog" role="dialog" aria-modal="true" aria-labelledby="cloud-dialog-title">
-              <span className="cloud-dialog-icon"><CloudUpload aria-hidden="true" /></span>
-              <h2 id="cloud-dialog-title">这个大文件怎么打开？</h2>
-              <p className="cloud-file-name" title={cloudCandidate.name}>{cloudCandidate.name}</p>
-              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。建议先用快速外观预览；如果手机无法完成，再试边读边显示或云端。</p>
-              <div className="privacy-note">
-                <strong>本地读取都不会上传</strong>
-                <span>快速预览会忽略原文件颜色和结构线，只生成低精度外观。只有选择云端时图纸才会上传。</span>
-              </div>
-              <div className="cloud-dialog-actions">
-                <button
-                  type="button"
-                  onClick={() => chooseLargeStepMethod("local")}
-                >
-                  边读边显示
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  onClick={() => chooseLargeStepMethod("lite")}
-                >
-                  快速外观预览
-                </button>
-                <button type="button" onClick={() => chooseLargeStepMethod("compatibility")}>整文件兼容读取</button>
-                <button
-                  className="cloud"
-                  type="button"
-                  onClick={() => chooseLargeStepMethod("cloud")}
-                >
-                  云端打开
-                </button>
-                <button className="cancel" type="button" onClick={() => setCloudCandidate(null)}>取消</button>
-              </div>
-            </section>
-          </div>
-        )}
-
         {error && (
           <div className="error-card" role="alert">
             <TriangleAlert aria-hidden="true" />
@@ -1186,7 +887,7 @@ export default function Home() {
           <div className="model-info">
             <div>
               <strong title={modelInfo.name}>{modelInfo.name}</strong>
-              <span>{modelInfo.meshes} 个网格 · {modelInfo.size}{modelInfo.quality === "lite" ? " · 极简预览" : ""}{modelInfo.partial ? " · 尚未完整" : ""}</span>
+              <span>{modelInfo.meshes} 个网格 · {modelInfo.size}{modelInfo.partial ? " · 尚未完整" : ""}</span>
             </div>
             <button type="button" onClick={closeModel} aria-label="关闭当前模型" title="关闭当前模型">
               <X aria-hidden="true" />

@@ -1,4 +1,4 @@
-const CACHE_NAME = "step-viewer-v12";
+const CACHE_NAME = "step-viewer-v13";
 const CORE_URLS = [
   "/",
   "/manifest.webmanifest",
@@ -7,13 +7,9 @@ const CORE_URLS = [
   "/icon-192.png",
   "/icon-512.png",
   "/step-worker.js",
-  "/step-worker.js?v=11",
-  "/step-split-worker.js?v=11",
-  "/step-partition.js?v=11",
-  "/cadrum-step-worker.js",
-  "/cadrum-step-worker.js?v=12",
-  "/cadrum/v1/cadrum_local_preview-ddf094990a106c75.js",
-  "/cadrum/v1/cadrum_local_preview-ddf094990a106c75_bg.wasm",
+  "/step-worker.js?v=13",
+  "/step-split-worker.js?v=13",
+  "/step-partition.js?v=13",
   "/occt/occt-import-js.js",
   "/occt/occt-import-js.wasm"
 ];

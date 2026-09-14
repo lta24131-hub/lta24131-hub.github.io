@@ -1,6 +1,7 @@
 /* global importScripts, occtimportjs */
 
 importScripts("/occt/occt-import-js.js");
+let engine;
 
 function sendError(error) {
   const message = error instanceof Error ? error.message : String(error || "STEP 文件读取失败。");
@@ -16,9 +17,9 @@ self.addEventListener("message", async (event) => {
     let content = new Uint8Array(buffer);
 
     self.postMessage({ type: "status", phase: "starting" });
-    const occt = await occtimportjs({
+    const occt = await (engine ??= occtimportjs({
       locateFile: (path) => path.endsWith(".wasm") ? "/occt/occt-import-js.wasm" : `/occt/${path}`,
-    });
+    }));
 
     self.postMessage({ type: "status", phase: "parsing" });
     const result = occt.ReadStepFile(content, event.data.params ?? null);
@@ -37,7 +38,7 @@ self.addEventListener("message", async (event) => {
     result.meshes = null;
 
     if (!meshes.length) {
-      throw new Error("当前数据没有生成可显示的外观网格；请尝试分批本地打开或整文件兼容读取。");
+      throw new Error("当前曲面未生成可显示的网格，已保留此前读出的部分。");
     }
 
     const total = meshes.length;
@@ -67,7 +68,7 @@ self.addEventListener("message", async (event) => {
       const transfer = [positions.buffer, indices.buffer];
       if (normals) transfer.push(normals.buffer);
       self.postMessage({ type: "mesh", name: "STEP 曲面批次", positions: positions.buffer, normals: normals?.buffer ?? null, indices: indices.buffer, indexType: IndexArray === Uint16Array ? "uint16" : "uint32" }, transfer);
-      self.postMessage({ type: "done", total: 1 });
+      self.postMessage({ type: "done", total: 1, heapBytes: occt.HEAPU8.byteLength });
       return;
     }
 

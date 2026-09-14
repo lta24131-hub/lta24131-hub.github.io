@@ -79,7 +79,7 @@
         }
         if (text.slice(cursor, cursor + 6) === "ENDSEC") break;
         const start = cursor;
-        if (text[cursor++] !== "#") throw new Error("这种 STEP 数据布局暂不支持分批读取，请选择兼容方式。");
+        if (text[cursor++] !== "#") throw new Error("这种 STEP 数据布局暂不支持分批读取。");
         const numberStart = cursor;
         while (text.charCodeAt(cursor) >= 48 && text.charCodeAt(cursor) <= 57) cursor++;
         const id = Number(text.slice(numberStart, cursor));
@@ -149,7 +149,7 @@
         let extra = 0;
         for (const ref of refs) if (!geometry.has(ref) && !this.meta.has(ref)) extra += this.record(ref).length + 1;
         if (selected.size && size + extra > 1024 * 1024) break;
-        if (extra > 12 * 1024 * 1024) throw new Error("有单个曲面过于复杂，已保留读出的部分；可尝试兼容方式。");
+        if (extra > 12 * 1024 * 1024) throw new Error("有单个曲面过于复杂，已保留读出的部分。");
         size += extra; selected.add(id); this.cursor++;
         for (const ref of refs) if (!this.meta.has(ref)) geometry.add(ref);
       }
