@@ -1,5 +1,6 @@
 /* Bounded STEP surface batches. Keep the original assembly graph, placements and units.
- * Only filter shell face lists; never invent transformations or drop hidden parts.
+ * Filter shell face lists and temporarily empty representation items only;
+ * never invent transformations or drop hidden parts from the final model.
  * Used in a dedicated worker, and imported by local regression tests.
  */
 (function (scope) {
@@ -8,6 +9,7 @@
   const FACE = /^(?:ADVANCED_FACE|FACE_SURFACE|FACE)\s*\(/;
   const ROOT = /^(?:SHAPE_DEFINITION_REPRESENTATION|CONTEXT_DEPENDENT_SHAPE_REPRESENTATION|SHAPE_REPRESENTATION_RELATIONSHIP|REPRESENTATION_RELATIONSHIP)\s*\(|^\(\s*REPRESENTATION_RELATIONSHIP\s*\(/;
   const REPR = /^(?:[A-Z_]*SHAPE_REPRESENTATION)\s*\(/;
+  const SHAPE_ITEM = /^(?:MANIFOLD_SOLID_BREP|BREP_WITH_VOIDS|SHELL_BASED_SURFACE_MODEL)\s*\(/;
 
   function references(record) {
     const ids = [];
@@ -116,8 +118,38 @@
       this.faceIds = [...this.faces];
       this.metaRecords = [...this.meta].map(id => {
         const record = this.record(id);
-        return { record, filtered: references(record).some(ref => this.faces.has(ref)) };
+        const refs = references(record);
+        return { id, record, refs, filtered: refs.some(ref => this.faces.has(ref)) };
       });
+      // Empty placeholder solids were being transferred hundreds of times per
+      // batch. Index only known BRep containers; leave unfamiliar entities alone.
+      // Assembly relationships, placements and units remain completely untouched.
+      const metadata = new Map(this.metaRecords.map(entry => [entry.id, entry]));
+      this.geometryItems = new Set();
+      this.faceItems = new Map();
+      for (const entry of this.metaRecords) {
+        if (!SHAPE_ITEM.test(entry.record.slice(entry.record.indexOf("=") + 1).trimStart())) continue;
+        const pending = [entry.id], seen = new Set(), faces = [];
+        let supported = true;
+        while (pending.length) {
+          const id = pending.pop();
+          if (seen.has(id)) continue;
+          seen.add(id);
+          if (this.faces.has(id)) { faces.push(id); continue; }
+          const node = metadata.get(id);
+          if (!node) { supported = false; break; }
+          for (const ref of node.refs) pending.push(ref);
+        }
+        if (!supported || !faces.length) continue;
+        this.geometryItems.add(entry.id);
+        for (const face of faces) {
+          if (!this.faceItems.has(face)) this.faceItems.set(face, []);
+          this.faceItems.get(face).push(entry.id);
+        }
+      }
+      for (const entry of this.metaRecords) {
+        entry.shapeItems = REPR.test(entry.record.slice(entry.record.indexOf("=") + 1).trimStart()) && entry.refs.some(id => this.geometryItems.has(id));
+      }
       this.supported = true;
     }
 
@@ -154,7 +186,13 @@
         for (const ref of refs) if (!this.meta.has(ref)) geometry.add(ref);
       }
       const records = [this.header];
-      for (const entry of this.metaRecords) records.push(entry.filtered ? filterFaces(entry.record, this.faces, selected) : entry.record);
+      const activeItems = new Set();
+      for (const face of selected) for (const item of this.faceItems.get(face) || []) activeItems.add(item);
+      for (const entry of this.metaRecords) {
+        let record = entry.filtered ? filterFaces(entry.record, this.faces, selected) : entry.record;
+        if (entry.shapeItems) record = filterFaces(record, this.geometryItems, activeItems);
+        records.push(record);
+      }
       for (const id of geometry) records.push(this.record(id));
       records.push("ENDSEC;\nEND-ISO-10303-21;");
       return {

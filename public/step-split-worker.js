@@ -1,5 +1,5 @@
 /* global importScripts, StepPartition */
-importScripts("/step-partition.js?v=13");
+importScripts("/step-partition.js?v=14");
 let partition;
 self.onmessage = async ({ data }) => {
   try {

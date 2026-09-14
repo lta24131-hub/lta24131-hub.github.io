@@ -39,7 +39,22 @@ const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: nu
   gloss: { label: "高光", metalness: 0.12, roughness: 0.12, envMapIntensity: 1.2 },
 };
 
-const COLOR_SWATCHES = ["#70ADD6", "#D7DEE5", "#F2A65A", "#E85D68", "#54B887", "#735DD0"];
+const DEFAULT_MODEL_COLOR = "#60666D";
+const COLOR_SWATCHES = [
+  { color: DEFAULT_MODEL_COLOR, label: "中性灰" },
+  { color: "#454B52", label: "石墨灰" },
+  { color: "#7B8188", label: "柔和灰" },
+  { color: "#536779", label: "灰蓝" },
+  { color: "#586C62", label: "灰绿" },
+  { color: "#796B5E", label: "暖灰" },
+  { color: "#75606A", label: "灰紫" },
+  { color: "#70ADD6", label: "浅蓝" },
+  { color: "#D7DEE5", label: "银白" },
+  { color: "#F2A65A", label: "橙色" },
+  { color: "#E85D68", label: "红色" },
+  { color: "#54B887", label: "绿色" },
+  { color: "#735DD0", label: "紫色" },
+];
 
 function readableSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -110,9 +125,9 @@ async function cacheForOffline(registration: ServiceWorkerRegistration) {
     location.origin + "/icon-192.png",
     location.origin + "/icon-512.png",
     location.origin + "/step-worker.js",
-    location.origin + "/step-worker.js?v=13",
-    location.origin + "/step-split-worker.js?v=13",
-    location.origin + "/step-partition.js?v=13",
+    location.origin + "/step-worker.js?v=14",
+    location.origin + "/step-split-worker.js?v=14",
+    location.origin + "/step-partition.js?v=14",
     location.origin + "/occt/occt-import-js.js",
     location.origin + "/occt/occt-import-js.wasm",
   ]);
@@ -165,7 +180,7 @@ export default function Home() {
   const [wireframe, setWireframe] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [orientationOpen, setOrientationOpen] = useState(false);
-  const [modelColor, setModelColor] = useState("#70ADD6");
+  const [modelColor, setModelColor] = useState(DEFAULT_MODEL_COLOR);
   const [materialPreset, setMaterialPreset] = useState<MaterialPresetKey>("standard");
   const [structureLines, setStructureLines] = useState(false);
   const [upAxis, setUpAxis] = useState<UpAxis>("y");
@@ -219,7 +234,7 @@ export default function Home() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 0.9;
     renderer.setClearColor(0x000000, 0);
     host.appendChild(renderer.domElement);
 
@@ -241,12 +256,12 @@ export default function Home() {
       autoFitRef.current = false;
     });
 
-    const hemisphere = new THREE.HemisphereLight(0xccecff, 0x17212b, 2.3);
+    const hemisphere = new THREE.HemisphereLight(0xf0f2f5, 0x252931, 1.6);
     scene.add(hemisphere);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 3.4);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
     keyLight.position.set(7, 10, 8);
     scene.add(keyLight);
-    const rimLight = new THREE.DirectionalLight(0x54bbff, 2.2);
+    const rimLight = new THREE.DirectionalLight(0xc7d0dc, 1.2);
     rimLight.position.set(-8, 3, -6);
     scene.add(rimLight);
 
@@ -742,14 +757,15 @@ export default function Home() {
                   />
                   <Palette aria-hidden="true" />
                 </label>
-                {COLOR_SWATCHES.map((color) => (
+                {COLOR_SWATCHES.map(({ color, label }) => (
                   <button
                     key={color}
                     className={`color-swatch ${modelColor === color ? "selected" : ""}`}
                     type="button"
                     style={{ backgroundColor: color }}
                     onClick={() => setModelColor(color)}
-                    aria-label={`切换模型颜色为 ${color}`}
+                    aria-label={`切换模型颜色为${label}`}
+                    title={label}
                     aria-pressed={modelColor === color}
                   />
                 ))}

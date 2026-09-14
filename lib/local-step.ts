@@ -28,7 +28,7 @@ export async function loadLocalStep(
   // heap. One parser and at most one prepared input can exist at any time.
   const parse = (buffer?: ArrayBuffer) => new Promise<void>((resolve, reject) => {
     if (signal.aborted) { reject(cancelled()); return; }
-    if (!parser) { parser = new Worker("/step-worker.js?v=13"); parserBatches = 0; }
+    if (!parser) { parser = new Worker("/step-worker.js?v=14"); parserBatches = 0; }
     const worker = parser;
     let settled = false;
     const finish = (error?: Error, heapBytes = 0) => {
@@ -87,7 +87,7 @@ export async function loadLocalStep(
       await parse();
     } else {
       onProgress("正在建立曲面索引", null);
-      splitter = new Worker("/step-split-worker.js?v=13");
+      splitter = new Worker("/step-split-worker.js?v=14");
       const indexed = await request({ type: "index", file }, 120000);
       if (indexed.type === "fallback") {
         splitter.terminate(); splitter = null;
