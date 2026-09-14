@@ -6,11 +6,13 @@ import {
   Download,
   FolderOpen,
   Maximize2,
+  Moon,
   Orbit,
   Palette,
   PanelsTopLeft,
   RefreshCw,
   RotateCw,
+  Sun,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -26,6 +28,7 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
 type UpAxis = "x" | "y" | "z" | "custom";
+type BackgroundMode = "dark" | "light";
 type CloudJobState = "uploading" | "queued" | "converting" | "ready" | "failed";
 
 type PendingCloudJob = {
@@ -184,6 +187,7 @@ export default function Home() {
   const [structureLines, setStructureLines] = useState(false);
   const [upAxis, setUpAxis] = useState<UpAxis>("y");
   const [cloudCandidate, setCloudCandidate] = useState<File | null>(null);
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>("dark");
 
   const fitView = useCallback(() => {
     const camera = cameraRef.current;
@@ -347,6 +351,20 @@ export default function Home() {
     });
     updateStructureLines(model, structureLines, modelColor);
   }, [materialPreset, modelColor, structureLines]);
+
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const materials = Array.isArray(grid.material) ? grid.material : [grid.material];
+    materials.forEach((material, index) => {
+      if (!(material instanceof THREE.LineBasicMaterial)) return;
+      material.color.setHex(backgroundMode === "light"
+        ? (index === 0 ? 0x4b7793 : 0x9bb2c1)
+        : (index === 0 ? 0x4e94bd : 0x24445d));
+      material.opacity = backgroundMode === "light" ? 0.34 : 0.2;
+      material.needsUpdate = true;
+    });
+  }, [backgroundMode]);
 
   const disposeModel = (model: THREE.Group) => {
     model.traverse((object) => {
@@ -823,7 +841,7 @@ export default function Home() {
   const offlineLabel = offlineState === "ready" ? "离线可用" : offlineState === "preparing" ? "准备离线功能" : "需联网重试";
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${backgroundMode === "light" ? "light-background" : "dark-background"}`}>
       <header className="topbar">
         <div className="brand" aria-label="3D 离线看图">
           <span className="brand-mark"><Box aria-hidden="true" /></span>
@@ -847,6 +865,15 @@ export default function Home() {
         <div ref={canvasHostRef} className="canvas-host" />
 
         <div className="tool-rail" aria-label="视图工具">
+          <button
+            type="button"
+            onClick={() => setBackgroundMode((value) => value === "dark" ? "light" : "dark")}
+            className={backgroundMode === "light" ? "active" : ""}
+            aria-label={backgroundMode === "dark" ? "切换为浅色背景" : "切换为深色背景"}
+            title={backgroundMode === "dark" ? "浅色背景" : "深色背景"}
+          >
+            {backgroundMode === "dark" ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+          </button>
           <button type="button" onClick={fitView} disabled={!modelInfo} aria-label="适合窗口" title="适合窗口">
             <Maximize2 aria-hidden="true" />
           </button>
