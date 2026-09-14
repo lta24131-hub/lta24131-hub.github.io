@@ -29,6 +29,7 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
 type UpAxis = "x" | "y" | "z" | "custom";
 type BackgroundMode = "dark" | "light";
+type LocalStepQuality = "standard" | "lite";
 type CloudJobState = "uploading" | "queued" | "converting" | "ready" | "failed";
 
 type PendingCloudJob = {
@@ -181,7 +182,7 @@ export default function Home() {
   const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
-  const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number } | null>(null);
+  const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number; quality?: LocalStepQuality } | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [orientationOpen, setOrientationOpen] = useState(false);
@@ -436,6 +437,7 @@ export default function Home() {
     file: File,
     group: THREE.Group,
     materialFor: () => THREE.MeshStandardMaterial,
+    quality: LocalStepQuality = "standard",
   ) => new Promise<number>((resolve, reject) => {
     const worker = new Worker("/step-worker.js");
     stepWorkerRef.current = worker;
@@ -462,6 +464,10 @@ export default function Home() {
       }
 
       if (data?.type === "mesh") {
+        if (!(data.positions instanceof ArrayBuffer) || data.positions.byteLength < 36 ||
+          !(data.indices instanceof ArrayBuffer) || data.indices.byteLength < 6) {
+          return;
+        }
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(data.positions), 3));
         if (data.normals) {
@@ -487,7 +493,8 @@ export default function Home() {
 
       if (data?.type === "done") {
         finish();
-        resolve(meshCount);
+        if (!meshCount) reject(new Error("模型已读取，但没有生成可显示的外观网格。"));
+        else resolve(meshCount);
         return;
       }
 
@@ -503,13 +510,15 @@ export default function Home() {
     };
 
     const megabytes = file.size / 1024 / 1024;
-    const params = megabytes > 120
-      ? { linearDeflection: 0.012, angularDeflection: 0.9 }
-      : megabytes > 60
-        ? { linearDeflection: 0.007, angularDeflection: 0.75 }
-        : megabytes > 30
-          ? { linearDeflection: 0.0035, angularDeflection: 0.6 }
-          : { linearDeflection: 0.0015, angularDeflection: 0.5 };
+    const params = quality === "lite"
+      ? megabytes > 120
+        ? { linearDeflection: 0.01, angularDeflection: 0.9 }
+        : megabytes > 60
+          ? { linearDeflection: 0.006, angularDeflection: 0.75 }
+          : { linearDeflection: 0.004, angularDeflection: 0.65 }
+      : megabytes > 30
+        ? { linearDeflection: 0.003, angularDeflection: 0.5 }
+        : { linearDeflection: 0.0015, angularDeflection: 0.5 };
 
     worker.postMessage({
       type: "parse",
@@ -720,7 +729,7 @@ export default function Home() {
     }
   };
 
-  const openFileLocally = async (file: File) => {
+  const openFileLocally = async (file: File, stepQuality: LocalStepQuality = "standard") => {
     const extension = file.name.split(".").pop()?.toLowerCase();
     if (!extension || !["stp", "step", "stl", "obj", "glb", "3mf"].includes(extension)) {
       setError("请选择 STEP、STP、STL、OBJ、GLB 或 3MF 文件。");
@@ -729,8 +738,16 @@ export default function Home() {
 
     setError("");
     setLoading(true);
-    setLoadingStatus("正在读取文件");
-    setLoadingNote("文件只在本机处理，不会上传");
+    const isStep = extension === "stp" || extension === "step";
+    const isLargeStep = isStep && file.size >= LARGE_STEP_THRESHOLD;
+    if (isLargeStep) {
+      setStructureLines(false);
+      setWireframe(false);
+    }
+    setLoadingStatus(stepQuality === "lite" && isStep ? "正在生成极简外观" : "正在读取文件");
+    setLoadingNote(stepQuality === "lite" && isStep
+      ? "采用较粗网格并关闭结构线，全程不会上传"
+      : "文件只在本机处理，不会上传");
     setLoadingProgress(null);
     await new Promise((resolve) => window.setTimeout(resolve, 60));
 
@@ -751,8 +768,9 @@ export default function Home() {
       let meshCount = 0;
       const materialFor = () => makeMaterial(modelColor, materialPreset, wireframe);
 
-      if (extension === "stp" || extension === "step") {
-        meshCount = await readStepFile(file, group, materialFor);
+      if (isStep) {
+        const safeMaterialFor = () => makeMaterial(modelColor, materialPreset, isLargeStep ? false : wireframe);
+        meshCount = await readStepFile(file, group, safeMaterialFor, stepQuality);
       } else if (extension === "stl") {
         const buffer = await file.arrayBuffer();
         const geometry = new STLLoader().parse(buffer);
@@ -802,12 +820,12 @@ export default function Home() {
         group.add(imported);
       }
 
-      updateStructureLines(group, structureLines, modelColor);
+      updateStructureLines(group, isLargeStep ? false : structureLines, modelColor);
       scene.add(group);
       modelRef.current = group;
       setUpAxis("y");
       setOrientationOpen(false);
-      setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount });
+      setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: isStep ? stepQuality : undefined });
       window.setTimeout(fitView, 0);
     } catch (caught) {
       stepWorkerRef.current?.terminate();
@@ -844,12 +862,14 @@ export default function Home() {
     await openFileLocally(file);
   };
 
-  const chooseLargeStepMethod = (method: "local" | "cloud") => {
+  const chooseLargeStepMethod = (method: "local" | "lite" | "cloud") => {
     if (largeFileDecisionRef.current || !cloudCandidate) return;
     largeFileDecisionRef.current = true;
     const file = cloudCandidate;
     setCloudCandidate(null);
-    const task = method === "local" ? openFileLocally(file) : startCloudConversion(file);
+    const task = method === "cloud"
+      ? startCloudConversion(file)
+      : openFileLocally(file, method === "lite" ? "lite" : "standard");
     void task.finally(() => {
       largeFileDecisionRef.current = false;
     });
@@ -1127,24 +1147,31 @@ export default function Home() {
               <span className="cloud-dialog-icon"><CloudUpload aria-hidden="true" /></span>
               <h2 id="cloud-dialog-title">这个大文件怎么打开？</h2>
               <p className="cloud-file-name" title={cloudCandidate.name}>{cloudCandidate.name}</p>
-              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。你可以先让手机直接尝试，全程不会上传；如果更看重速度，再选择云端快速打开。</p>
+              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。原来能在手机打开的图纸请选择“正常本地”；更大的图纸可以试“极简预览”。</p>
               <div className="privacy-note">
-                <strong>只有选择云端才会上传</strong>
-                <span>云端会删除内部完全看不到的零件；原始图纸在转换完成后删除，轻量模型在手机打开后删除。</span>
+                <strong>两种本地方式都不会上传</strong>
+                <span>极简预览会降低曲面精细度并关闭结构线；打开后仍可重新开启结构线。只有选择云端时图纸才会上传。</span>
               </div>
               <div className="cloud-dialog-actions">
                 <button
                   type="button"
                   onClick={() => chooseLargeStepMethod("local")}
                 >
-                  先在手机打开
+                  正常本地打开
                 </button>
                 <button
                   className="primary"
                   type="button"
+                  onClick={() => chooseLargeStepMethod("lite")}
+                >
+                  极简本地预览
+                </button>
+                <button
+                  className="cloud"
+                  type="button"
                   onClick={() => chooseLargeStepMethod("cloud")}
                 >
-                  云端快速打开
+                  云端打开
                 </button>
                 <button className="cancel" type="button" onClick={() => setCloudCandidate(null)}>取消</button>
               </div>
@@ -1164,7 +1191,7 @@ export default function Home() {
           <div className="model-info">
             <div>
               <strong title={modelInfo.name}>{modelInfo.name}</strong>
-              <span>{modelInfo.meshes} 个部件 · {modelInfo.size}</span>
+              <span>{modelInfo.meshes} 个部件 · {modelInfo.size}{modelInfo.quality === "lite" ? " · 极简预览" : ""}</span>
             </div>
             <button type="button" onClick={closeModel} aria-label="关闭当前模型" title="关闭当前模型">
               <X aria-hidden="true" />

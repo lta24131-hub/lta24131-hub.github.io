@@ -29,7 +29,17 @@ self.addEventListener("message", async (event) => {
       throw new Error("这个文件没有可显示的三维实体。");
     }
 
-    const meshes = result.meshes;
+    const meshes = result.meshes.filter((source) => (
+      source?.attributes?.position?.array?.length >= 9 &&
+      source?.index?.array?.length >= 3
+    ));
+    result.root = null;
+    result.meshes = null;
+
+    if (!meshes.length) {
+      throw new Error("模型已读取，但没有生成可显示的外观网格。请改用正常本地打开或云端处理。");
+    }
+
     const total = meshes.length;
     self.postMessage({ type: "start", total });
 
@@ -58,6 +68,7 @@ self.addEventListener("message", async (event) => {
       source.attributes.position.array = [];
       if (source.attributes.normal) source.attributes.normal.array = [];
       source.index.array = [];
+      source.brep_faces = [];
       meshes[meshIndex] = null;
     }
 
