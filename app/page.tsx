@@ -35,7 +35,8 @@ type PendingCloudJob = {
   id: string;
   fileName: string;
   size: number;
-  accessKey: string;
+  taskToken?: string;
+  accessKey?: string;
 };
 
 type CloudStatus = {
@@ -51,6 +52,7 @@ type CloudStatus = {
 const LARGE_STEP_THRESHOLD = 35 * 1024 * 1024;
 const CLOUD_SITE_ORIGIN = "https://step-viewer-offline-0914.design53648.chatgpt.site";
 const PENDING_CLOUD_JOB_KEY = "step-viewer-pending-cloud-job";
+const CLOUD_ACCESS_KEY_STORAGE = "step-viewer-cloud-access-key";
 const QUARTER_TURNS = (["x", "y", "z"] as const).flatMap((axis) => ([-1, 1] as const).map((direction) => ({ axis, direction })));
 
 const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: number; roughness: number; envMapIntensity: number }> = {
@@ -73,8 +75,8 @@ function isValidPendingCloudJob(value: PendingCloudJob) {
     /^[0-9a-f-]{36}$/i.test(value.id) &&
     typeof value.fileName === "string" &&
     Number.isFinite(value.size) &&
-    typeof value.accessKey === "string" &&
-    value.accessKey.length > 0
+    ((typeof value.taskToken === "string" && value.taskToken.length >= 64) ||
+      (typeof value.accessKey === "string" && value.accessKey.length > 0))
   );
 }
 
@@ -171,6 +173,7 @@ export default function Home() {
   const modelRef = useRef<THREE.Group | null>(null);
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const stepWorkerRef = useRef<Worker | null>(null);
+  const largeFileDecisionRef = useRef(false);
   const [offlineState, setOfflineState] = useState<"preparing" | "ready" | "failed">("preparing");
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState("正在读取文件");
@@ -188,6 +191,18 @@ export default function Home() {
   const [upAxis, setUpAxis] = useState<UpAxis>("y");
   const [cloudCandidate, setCloudCandidate] = useState<File | null>(null);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>("dark");
+
+  useEffect(() => {
+    const parameters = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const activationKey = parameters.get("activate")?.trim();
+    if (!activationKey) return;
+    if (/^[A-Za-z0-9_-]{12,128}$/.test(activationKey)) {
+      localStorage.setItem(CLOUD_ACCESS_KEY_STORAGE, activationKey);
+    }
+    parameters.delete("activate");
+    const remainingHash = parameters.toString();
+    history.replaceState(history.state, "", `${location.pathname}${location.search}${remainingHash ? `#${remainingHash}` : ""}`);
+  }, []);
 
   const fitView = useCallback(() => {
     const camera = cameraRef.current;
@@ -509,16 +524,24 @@ export default function Home() {
 
   const cloudApiOrigin = () => location.hostname.endsWith("github.io") ? CLOUD_SITE_ORIGIN : location.origin;
 
-  const cloudFetch = async (path: string, accessKey: string, init?: RequestInit) => {
+  const cloudRequest = async (path: string, credentialHeader: "X-Conversion-Key" | "X-Task-Token", credential: string, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
-    headers.set("X-Conversion-Key", accessKey);
+    headers.set(credentialHeader, credential);
     const response = await fetch(`${cloudApiOrigin()}${path}`, { ...init, headers, cache: "no-store" });
     if (!response.ok) {
       const body = await response.json().catch(() => ({})) as { error?: string; code?: string };
-      if (body.code === "access_key") localStorage.removeItem("step-viewer-cloud-access-key");
+      if (body.code === "access_key") localStorage.removeItem(CLOUD_ACCESS_KEY_STORAGE);
       throw new Error(body.error || `云端处理失败（${response.status}）。`);
     }
     return response;
+  };
+
+  const cloudAccessFetch = (path: string, accessKey: string, init?: RequestInit) =>
+    cloudRequest(path, "X-Conversion-Key", accessKey, init);
+
+  const cloudTaskFetch = (path: string, job: PendingCloudJob, init?: RequestInit) => {
+    if (job.taskToken) return cloudRequest(path, "X-Task-Token", job.taskToken, init);
+    return cloudRequest(path, "X-Conversion-Key", job.accessKey ?? "", init);
   };
 
   const showCloudResult = async (buffer: ArrayBuffer, job: PendingCloudJob) => {
@@ -556,7 +579,7 @@ export default function Home() {
   const waitForCloudConversion = async (job: PendingCloudJob) => {
     const deadline = Date.now() + 45 * 60 * 1000;
     while (Date.now() < deadline) {
-      const statusResponse = await cloudFetch(`/api/convert/status/${job.id}`, job.accessKey);
+      const statusResponse = await cloudTaskFetch(`/api/convert/status/${job.id}`, job);
       const status = await statusResponse.json() as CloudStatus;
       setLoadingStatus(status.message || "正在云端转换");
       setLoadingProgress(Math.min(97, 62 + Math.round(Math.max(0, status.progress) * 0.35)));
@@ -566,13 +589,13 @@ export default function Home() {
       if (status.state === "ready") {
         setLoadingStatus("正在下载轻量模型");
         setLoadingProgress(98);
-        const result = await cloudFetch(`/api/convert/result/${job.id}`, job.accessKey);
+        const result = await cloudTaskFetch(`/api/convert/result/${job.id}`, job);
         const buffer = await result.arrayBuffer();
         setLoadingStatus("正在打开外观模型");
         setLoadingProgress(99);
         await showCloudResult(buffer, job);
         localStorage.removeItem(PENDING_CLOUD_JOB_KEY);
-        void cloudFetch(`/api/convert/task/${job.id}`, job.accessKey, { method: "DELETE" }).catch(() => undefined);
+        void cloudTaskFetch(`/api/convert/task/${job.id}`, job, { method: "DELETE" }).catch(() => undefined);
         setLoadingProgress(100);
         return;
       }
@@ -582,14 +605,10 @@ export default function Home() {
   };
 
   const startCloudConversion = async (file: File) => {
-    let accessKey = localStorage.getItem("step-viewer-cloud-access-key")?.trim() || "";
+    const accessKey = localStorage.getItem(CLOUD_ACCESS_KEY_STORAGE)?.trim() || "";
     if (!accessKey) {
-      accessKey = window.prompt("首次使用云端快速处理，请输入开通码（以后不用再输入）：")?.trim() || "";
-      if (!accessKey) {
-        setError("没有输入开通码，已取消云端处理。");
-        return;
-      }
-      localStorage.setItem("step-viewer-cloud-access-key", accessKey);
+      setError("这台设备还没有启用云端快速处理，请用专用链接重新打开网站一次。");
+      return;
     }
 
     setError("");
@@ -599,15 +618,18 @@ export default function Home() {
     setLoadingProgress(0);
     let taskId = "";
     let queued = false;
+    let pendingJob: PendingCloudJob | null = null;
 
     try {
-      const createResponse = await cloudFetch("/api/convert/create", accessKey, {
+      const createResponse = await cloudAccessFetch("/api/convert/create", accessKey, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fileName: file.name, size: file.size }),
       });
-      const task = await createResponse.json() as { id: string; uploadId: string; partSize: number };
+      const task = await createResponse.json() as { id: string; uploadId: string; partSize: number; taskToken: string };
       taskId = task.id;
+      if (!task.taskToken) throw new Error("云端任务权限创建失败，请稍后重试。");
+      pendingJob = { id: task.id, fileName: file.name, size: file.size, taskToken: task.taskToken };
       const partCount = Math.ceil(file.size / task.partSize);
       const parts: Array<{ partNumber: number; etag: string }> = [];
       let nextPart = 1;
@@ -619,7 +641,7 @@ export default function Home() {
           if (partNumber > partCount) return;
           const start = (partNumber - 1) * task.partSize;
           const end = Math.min(start + task.partSize, file.size);
-          const response = await cloudFetch(`/api/convert/upload/${task.id}/${partNumber}?uploadId=${encodeURIComponent(task.uploadId)}`, accessKey, {
+          const response = await cloudTaskFetch(`/api/convert/upload/${task.id}/${partNumber}?uploadId=${encodeURIComponent(task.uploadId)}`, pendingJob!, {
             method: "PUT",
             headers: { "Content-Type": "application/octet-stream" },
             body: file.slice(start, end),
@@ -636,20 +658,22 @@ export default function Home() {
 
       setLoadingStatus("上传完成，正在启动云端转换");
       setLoadingProgress(61);
-      await cloudFetch(`/api/convert/complete/${task.id}`, accessKey, {
+      await cloudTaskFetch(`/api/convert/complete/${task.id}`, pendingJob, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uploadId: task.uploadId, parts }),
       });
       queued = true;
-      const pendingJob: PendingCloudJob = { id: task.id, fileName: file.name, size: file.size, accessKey };
       localStorage.setItem(PENDING_CLOUD_JOB_KEY, JSON.stringify(pendingJob));
       await waitForCloudConversion(pendingJob);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "云端处理失败，请稍后重试。";
       setError(message);
       if (!queued && taskId) {
-        void cloudFetch(`/api/convert/task/${taskId}`, accessKey, { method: "DELETE" }).catch(() => undefined);
+        const cleanup = pendingJob
+          ? cloudTaskFetch(`/api/convert/task/${taskId}`, pendingJob, { method: "DELETE" })
+          : cloudAccessFetch(`/api/convert/task/${taskId}`, accessKey, { method: "DELETE" });
+        void cleanup.catch(() => undefined);
       }
     } finally {
       setLoading(false);
@@ -696,23 +720,10 @@ export default function Home() {
     }
   };
 
-  const openFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
+  const openFileLocally = async (file: File) => {
     const extension = file.name.split(".").pop()?.toLowerCase();
     if (!extension || !["stp", "step", "stl", "obj", "glb", "3mf"].includes(extension)) {
       setError("请选择 STEP、STP、STL、OBJ、GLB 或 3MF 文件。");
-      return;
-    }
-
-    if ((extension === "stp" || extension === "step") && file.size >= LARGE_STEP_THRESHOLD) {
-      if (!navigator.onLine) {
-        setError("这是大型 STEP 文件，请连接网络后使用云端快速处理。");
-        return;
-      }
-      setCloudCandidate(file);
       return;
     }
 
@@ -802,10 +813,46 @@ export default function Home() {
       stepWorkerRef.current?.terminate();
       stepWorkerRef.current = null;
       const message = caught instanceof Error ? caught.message : "文件读取失败，请换一个模型文件重试。";
-      setError(message);
+      const isLargeLocalStep = (extension === "stp" || extension === "step") && file.size >= LARGE_STEP_THRESHOLD;
+      if (isLargeLocalStep) {
+        setError(`手机没有成功打开这个大文件，文件没有上传。你可以在下方改用云端快速打开。${message ? `（${message}）` : ""}`);
+        setCloudCandidate(file);
+      } else {
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleFilePicked = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    if (!extension || !["stp", "step", "stl", "obj", "glb", "3mf"].includes(extension)) {
+      setError("请选择 STEP、STP、STL、OBJ、GLB 或 3MF 文件。");
+      return;
+    }
+
+    if ((extension === "stp" || extension === "step") && file.size >= LARGE_STEP_THRESHOLD) {
+      setCloudCandidate(file);
+      return;
+    }
+
+    await openFileLocally(file);
+  };
+
+  const chooseLargeStepMethod = (method: "local" | "cloud") => {
+    if (largeFileDecisionRef.current || !cloudCandidate) return;
+    largeFileDecisionRef.current = true;
+    const file = cloudCandidate;
+    setCloudCandidate(null);
+    const task = method === "local" ? openFileLocally(file) : startCloudConversion(file);
+    void task.finally(() => {
+      largeFileDecisionRef.current = false;
+    });
   };
 
   useEffect(() => {
@@ -823,7 +870,7 @@ export default function Home() {
           .catch((caught) => {
             const message = caught instanceof Error ? caught.message : "无法恢复云端转换任务。";
             setError(message);
-            if (/不存在|已过期|无效|没有完成|开通码/.test(message)) localStorage.removeItem(PENDING_CLOUD_JOB_KEY);
+            if (/不存在|已过期|无效|没有完成|权限|启用/.test(message)) localStorage.removeItem(PENDING_CLOUD_JOB_KEY);
           })
           .finally(() => {
             setLoading(false);
@@ -857,7 +904,7 @@ export default function Home() {
             <span>{offlineLabel}</span>
           </div>
         </div>
-        <input ref={fileInputRef} className="hidden-input" type="file" onChange={openFile} />
+        <input ref={fileInputRef} className="hidden-input" type="file" onChange={handleFilePicked} />
       </header>
 
       <section ref={stageRef} className="viewer-stage" aria-label="三维模型查看区域">
@@ -1053,7 +1100,7 @@ export default function Home() {
           <div className="empty-state">
             <span className="empty-icon"><Orbit aria-hidden="true" /></span>
             <h1>打开一个三维模型</h1>
-            <p>支持 STEP、STP、STL、OBJ、GLB 和 3MF。大型 STEP 会自动使用云端轻量化。</p>
+            <p>支持 STEP、STP、STL、OBJ、GLB 和 3MF。大型 STEP 可先在手机打开，也可选择云端轻量化。</p>
             <button className="open-button" type="button" onClick={() => fileInputRef.current?.click()}>
               <FolderOpen aria-hidden="true" />
               选择文件
@@ -1078,26 +1125,28 @@ export default function Home() {
           <div className="dialog-backdrop" role="presentation">
             <section className="cloud-dialog" role="dialog" aria-modal="true" aria-labelledby="cloud-dialog-title">
               <span className="cloud-dialog-icon"><CloudUpload aria-hidden="true" /></span>
-              <h2 id="cloud-dialog-title">用云端快速打开？</h2>
+              <h2 id="cloud-dialog-title">这个大文件怎么打开？</h2>
               <p className="cloud-file-name" title={cloudCandidate.name}>{cloudCandidate.name}</p>
-              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}，手机直接解析容易卡住。图纸将临时上传，云端会删除内部完全看不到的零件，只生成可旋转的外观模型。</p>
+              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。你可以先让手机直接尝试，全程不会上传；如果更看重速度，再选择云端快速打开。</p>
               <div className="privacy-note">
-                <strong>文件处理说明</strong>
-                <span>原始图纸在转换完成后自动删除；生成的轻量模型在手机打开后删除。</span>
+                <strong>只有选择云端才会上传</strong>
+                <span>云端会删除内部完全看不到的零件；原始图纸在转换完成后删除，轻量模型在手机打开后删除。</span>
               </div>
               <div className="cloud-dialog-actions">
-                <button type="button" onClick={() => setCloudCandidate(null)}>取消</button>
+                <button
+                  type="button"
+                  onClick={() => chooseLargeStepMethod("local")}
+                >
+                  先在手机打开
+                </button>
                 <button
                   className="primary"
                   type="button"
-                  onClick={() => {
-                    const file = cloudCandidate;
-                    setCloudCandidate(null);
-                    if (file) void startCloudConversion(file);
-                  }}
+                  onClick={() => chooseLargeStepMethod("cloud")}
                 >
-                  在线快速打开
+                  云端快速打开
                 </button>
+                <button className="cancel" type="button" onClick={() => setCloudCandidate(null)}>取消</button>
               </div>
             </section>
           </div>

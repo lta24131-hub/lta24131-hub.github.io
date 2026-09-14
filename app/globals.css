@@ -499,7 +499,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 }
 .privacy-note strong { color: #bedceb; font-size: .76rem; }
 .privacy-note span { color: #829eb1; font-size: .71rem; line-height: 1.45; }
-.cloud-dialog-actions { display: grid; grid-template-columns: 1fr 1.55fr; gap: 9px; margin-top: 18px; }
+.cloud-dialog-actions { display: grid; grid-template-columns: 1fr 1.25fr; gap: 9px; margin-top: 18px; }
 .cloud-dialog-actions button {
   min-height: 46px;
   border: 1px solid rgba(132, 183, 214, .18);
@@ -513,6 +513,12 @@ button, label { -webkit-tap-highlight-color: transparent; }
   color: #04131e;
   background: linear-gradient(180deg, #70d8ff, #32b8ff);
   font-weight: 720;
+}
+.cloud-dialog-actions button.cancel {
+  grid-column: 1 / -1;
+  min-height: 38px;
+  border-color: transparent;
+  background: transparent;
 }
 .cloud-dialog-actions button:active { transform: translateY(1px); }
 

@@ -1,105 +1,112 @@
 name: Convert large STEP for mobile
 
 on:
+  schedule:
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
-    inputs:
-      task_id:
-        description: Temporary conversion task ID
-        required: true
-        type: string
-      callback_token:
-        description: One-time callback token
-        required: true
-        type: string
-      api_url:
-        description: Conversion API origin
-        required: true
-        type: string
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
-  group: step-convert-${{ inputs.task_id }}
+  group: step-convert-queue
   cancel-in-progress: false
+
+env:
+  CONVERSION_API_ORIGIN: https://step-viewer-offline-0914.design53648.chatgpt.site
+  OIDC_AUDIENCE: step-viewer-cloud-converter
 
 jobs:
   convert:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Checkout converter
-        uses: actions/checkout@v4
-
-      - name: Protect temporary credentials
+      - name: Claim the next private conversion
+        id: claim
         shell: bash
         run: |
-          echo "::add-mask::${{ inputs.callback_token }}"
-          echo "::add-mask::${{ inputs.task_id }}"
+          set -euo pipefail
+          separator='&'
+          if [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" != *'?'* ]]; then separator='?'; fi
+          audience="$(jq -rn --arg value "$OIDC_AUDIENCE" '$value | @uri')"
+          oidc_json="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" -H "Accept: application/json; api-version=2.0" "${ACTIONS_ID_TOKEN_REQUEST_URL}${separator}audience=${audience}")"
+          oidc_token="$(jq -er '.value | select(type == "string" and length > 0)' <<<"$oidc_json")"
+          echo "::add-mask::$oidc_token"
+
+          claim_json="$(curl --fail-with-body --silent --show-error -X POST "$CONVERSION_API_ORIGIN/api/convert/claim" -H "Authorization: Bearer $oidc_token" -H "Content-Type: application/json" -H "Accept: application/json" --data '{}')"
+          task_id="$(jq -r '.id // empty' <<<"$claim_json")"
+          if [[ -z "$task_id" ]]; then
+            echo "has_task=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          callback_token="$(jq -er '.callbackToken | select(type == "string" and length >= 64)' <<<"$claim_json")"
+          api_origin="$(jq -er '.apiOrigin | select(type == "string" and startswith("https://"))' <<<"$claim_json")"
+          echo "::add-mask::$task_id"
+          echo "::add-mask::$callback_token"
+          {
+            echo "has_task=true"
+            echo "task_id=$task_id"
+            echo "callback_token=$callback_token"
+            echo "api_origin=$api_origin"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout converter
+        if: steps.claim.outputs.has_task == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Install CAD conversion engine
+        if: steps.claim.outputs.has_task == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends freecad-python3 blender
 
       - name: Download private temporary drawing
+        if: steps.claim.outputs.has_task == 'true'
         env:
-          API_URL: ${{ inputs.api_url }}
-          TASK_ID: ${{ inputs.task_id }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          API_URL: ${{ steps.claim.outputs.api_origin }}
+          TASK_ID: ${{ steps.claim.outputs.task_id }}
+          CALLBACK_TOKEN: ${{ steps.claim.outputs.callback_token }}
         run: |
-          curl --fail --silent --show-error --retry 3 \
-            "$API_URL/api/convert/source/$TASK_ID?token=$CALLBACK_TOKEN" \
-            --output source.step
-          curl --fail --silent --show-error \
-            -H "Content-Type: application/json" \
-            -d '{"progress":12,"message":"云端已收到图纸，正在读取结构"}' \
-            "$API_URL/api/convert/progress/$TASK_ID?token=$CALLBACK_TOKEN"
+          curl --fail-with-body --silent --show-error --retry 3 -H "Authorization: Bearer $CALLBACK_TOKEN" "$API_URL/api/convert/source/$TASK_ID" --output source.step
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $CALLBACK_TOKEN" -H "Content-Type: application/json" -d '{"progress":12,"message":"云端已收到图纸，正在读取结构"}' "$API_URL/api/convert/progress/$TASK_ID"
 
       - name: Convert STEP to a lightweight surface mesh
+        if: steps.claim.outputs.has_task == 'true'
         env:
-          API_URL: ${{ inputs.api_url }}
-          TASK_ID: ${{ inputs.task_id }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          API_URL: ${{ steps.claim.outputs.api_origin }}
+          TASK_ID: ${{ steps.claim.outputs.task_id }}
+          CALLBACK_TOKEN: ${{ steps.claim.outputs.callback_token }}
         run: |
           mkdir -p visible-parts
           freecadcmd .github/scripts/convert_step.py source.step visible-parts
-          curl --fail --silent --show-error \
-            -H "Content-Type: application/json" \
-            -d '{"progress":62,"message":"外观网格已生成，正在删除内部隐藏零件"}' \
-            "$API_URL/api/convert/progress/$TASK_ID?token=$CALLBACK_TOKEN"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $CALLBACK_TOKEN" -H "Content-Type: application/json" -d '{"progress":62,"message":"外观网格已生成，正在删除内部隐藏零件"}' "$API_URL/api/convert/progress/$TASK_ID"
           blender --background --python .github/scripts/keep_visible_parts.py -- visible-parts model.glb
-          curl --fail --silent --show-error \
-            -H "Content-Type: application/json" \
-            -d '{"progress":88,"message":"隐藏零件已删除，正在压缩手机模型"}' \
-            "$API_URL/api/convert/progress/$TASK_ID?token=$CALLBACK_TOKEN"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $CALLBACK_TOKEN" -H "Content-Type: application/json" -d '{"progress":88,"message":"隐藏零件已删除，正在压缩手机模型"}' "$API_URL/api/convert/progress/$TASK_ID"
 
       - name: Return lightweight model
+        if: steps.claim.outputs.has_task == 'true'
         env:
-          API_URL: ${{ inputs.api_url }}
-          TASK_ID: ${{ inputs.task_id }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          API_URL: ${{ steps.claim.outputs.api_origin }}
+          TASK_ID: ${{ steps.claim.outputs.task_id }}
+          CALLBACK_TOKEN: ${{ steps.claim.outputs.callback_token }}
         run: |
-          curl --fail --silent --show-error --retry 3 \
-            -H "Content-Type: model/gltf-binary" \
-            --upload-file model.glb \
-            "$API_URL/api/convert/result/$TASK_ID?token=$CALLBACK_TOKEN"
-          curl --fail --silent --show-error \
-            -H "Content-Type: application/json" -d '{}' \
-            "$API_URL/api/convert/finished/$TASK_ID?token=$CALLBACK_TOKEN"
+          curl --fail-with-body --silent --show-error --retry 3 -H "Authorization: Bearer $CALLBACK_TOKEN" -H "Content-Type: model/gltf-binary" --upload-file model.glb "$API_URL/api/convert/result/$TASK_ID"
+          curl --fail-with-body --silent --show-error -H "Authorization: Bearer $CALLBACK_TOKEN" -H "Content-Type: application/json" -d '{}' "$API_URL/api/convert/finished/$TASK_ID"
 
       - name: Report failure and remove runner files
-        if: ${{ always() }}
+        if: ${{ always() && steps.claim.outputs.has_task == 'true' }}
         env:
-          API_URL: ${{ inputs.api_url }}
-          TASK_ID: ${{ inputs.task_id }}
-          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          API_URL: ${{ steps.claim.outputs.api_origin }}
+          TASK_ID: ${{ steps.claim.outputs.task_id }}
+          CALLBACK_TOKEN: ${{ steps.claim.outputs.callback_token }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          if [ "$JOB_STATUS" != "success" ]; then
-            curl --silent --show-error \
-              -H "Content-Type: application/json" \
-              -d '{"message":"云端转换没有完成，请重新选择文件再试。"}' \
-              "$API_URL/api/convert/failed/$TASK_ID?token=$CALLBACK_TOKEN" || true
+          if [[ "$JOB_STATUS" != "success" ]]; then
+            curl --silent --show-error -H "Authorization: Bearer $CALLBACK_TOKEN" -H "Content-Type: application/json" -d '{"message":"云端转换没有完成，请重新选择文件再试。"}' "$API_URL/api/convert/failed/$TASK_ID" || true
           fi
-          rm -rf source.step visible-parts model.glb
+          rm -rf -- "$GITHUB_WORKSPACE/source.step" "$GITHUB_WORKSPACE/visible-parts" "$GITHUB_WORKSPACE/model.glb"

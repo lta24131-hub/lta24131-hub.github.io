@@ -36,6 +36,7 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
 # Checkout-local execution profile and tool state; never publish them.
@@ -44,3 +45,11 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+
+# CAD/model files are user data and must never enter the published repository.
+*.[Ss][Tt][Ee][Pp]
+*.[Ss][Tt][Pp]
+*.[Ss][Tt][Ll]
+*.[Oo][Bb][Jj]
+*.[Gg][Ll][Bb]
+*.[3][Mm][Ff]
