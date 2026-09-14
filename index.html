@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STEP 分批本地预览引擎</title>
+    
+<script type="module">
+import init, * as bindings from '/cadrum_local_preview-ddf094990a106c75.js';
+const wasm = await init({ module_or_path: '/cadrum_local_preview-ddf094990a106c75_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+  <link rel="modulepreload" href="/cadrum_local_preview-ddf094990a106c75.js" crossorigin="anonymous" integrity="sha384-yirNyxQ+Oy7ILVlfF9elXuxcq5C7cFbaaBmiHNe0QuRUBqddOj+4OO/u8JEmv2Jv"><link rel="preload" href="/cadrum_local_preview-ddf094990a106c75_bg.wasm" crossorigin="anonymous" integrity="sha384-Hu55s0yt8FAajUcwm0TTfmOw3LiEnq8mdINxCoKiLu//C+5jCww67VVK78Sjam4q" as="fetch" type="application/wasm"></head>
+  <body></body>
+</html>
+
