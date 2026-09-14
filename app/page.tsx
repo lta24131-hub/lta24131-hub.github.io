@@ -25,11 +25,12 @@ import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import { loadLocalStep, type StepQuality } from "@/lib/local-step";
 
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
 type UpAxis = "x" | "y" | "z" | "custom";
 type BackgroundMode = "dark" | "light";
-type LocalStepQuality = "standard" | "lite";
+type LocalStepQuality = StepQuality;
 type CloudJobState = "uploading" | "queued" | "converting" | "ready" | "failed";
 
 type PendingCloudJob = {
@@ -132,6 +133,11 @@ function updateStructureLines(model: THREE.Group, visible: boolean, modelColor: 
 }
 
 async function cacheForOffline(registration: ServiceWorkerRegistration) {
+  // Hydration can run before its own entry script has a Resource Timing entry.
+  // Waiting for load and reading script/link URLs avoids a falsely ready cache.
+  if (document.readyState !== "complete") {
+    await new Promise<void>((resolve) => window.addEventListener("load", () => resolve(), { once: true }));
+  }
   const urls = new Set<string>([
     location.origin + "/",
     location.origin + "/manifest.webmanifest",
@@ -140,13 +146,20 @@ async function cacheForOffline(registration: ServiceWorkerRegistration) {
     location.origin + "/icon-192.png",
     location.origin + "/icon-512.png",
     location.origin + "/step-worker.js",
+    location.origin + "/step-worker.js?v=11",
+    location.origin + "/step-split-worker.js?v=11",
+    location.origin + "/step-partition.js?v=11",
     location.origin + "/occt/occt-import-js.js",
     location.origin + "/occt/occt-import-js.wasm",
   ]);
 
   for (const entry of performance.getEntriesByType("resource")) {
     const url = new URL(entry.name, location.href);
-    if (url.origin === location.origin) urls.add(url.href);
+    if (url.origin === location.origin && !url.pathname.startsWith("/api/")) urls.add(url.href);
+  }
+  for (const element of document.querySelectorAll<HTMLScriptElement | HTMLLinkElement>('script[src], link[rel="modulepreload"], link[rel="stylesheet"]')) {
+    const url = new URL(element instanceof HTMLScriptElement ? element.src : element.href, location.href);
+    if (url.origin === location.origin && !url.pathname.startsWith("/api/")) urls.add(url.href);
   }
 
   const worker = registration.active ?? registration.waiting ?? registration.installing;
@@ -173,7 +186,8 @@ export default function Home() {
   const controlsRef = useRef<OrbitControls | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
   const gridRef = useRef<THREE.GridHelper | null>(null);
-  const stepWorkerRef = useRef<Worker | null>(null);
+  const localAbortRef = useRef<AbortController | null>(null);
+  const autoFitRef = useRef(true);
   const largeFileDecisionRef = useRef(false);
   const [offlineState, setOfflineState] = useState<"preparing" | "ready" | "failed">("preparing");
   const [loading, setLoading] = useState(false);
@@ -182,7 +196,7 @@ export default function Home() {
   const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
-  const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number; quality?: LocalStepQuality } | null>(null);
+  const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number; quality?: LocalStepQuality; partial?: boolean } | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [orientationOpen, setOrientationOpen] = useState(false);
@@ -212,14 +226,16 @@ export default function Home() {
     if (!camera || !controls || !model) return;
 
     const box = new THREE.Box3().setFromObject(model);
+    if (box.isEmpty() || ![...box.min, ...box.max].every(Number.isFinite)) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const maxDimension = Math.max(size.x, size.y, size.z, 1);
-    const fitHeightDistance = maxDimension / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)));
-    const distance = fitHeightDistance * 1.45;
+    const verticalHalfFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
+    const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
+    const distance = Math.max(size.length() / 2, 1) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov)) * 1.1;
 
     controls.target.copy(center);
-    camera.position.copy(center).add(new THREE.Vector3(distance * 0.82, distance * 0.62, distance));
+    camera.position.copy(center).add(new THREE.Vector3(0.82, 0.62, 1).normalize().multiplyScalar(distance));
     camera.near = Math.max(maxDimension / 1000, 0.01);
     camera.far = Math.max(maxDimension * 100, 1000);
     camera.updateProjectionMatrix();
@@ -268,6 +284,7 @@ export default function Home() {
     controls.touches.ONE = THREE.TOUCH.ROTATE;
     controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     controlsRef.current = controls;
+    controls.addEventListener("start", () => { autoFitRef.current = false; });
 
     const hemisphere = new THREE.HemisphereLight(0xccecff, 0x17212b, 2.3);
     scene.add(hemisphere);
@@ -331,7 +348,7 @@ export default function Home() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => () => stepWorkerRef.current?.terminate(), []);
+  useEffect(() => () => localAbortRef.current?.abort(), []);
 
   useEffect(() => {
     const model = modelRef.current;
@@ -392,6 +409,7 @@ export default function Home() {
   };
 
   const closeModel = () => {
+    localAbortRef.current?.abort();
     const scene = sceneRef.current;
     const model = modelRef.current;
     if (scene && model) {
@@ -433,103 +451,6 @@ export default function Home() {
     window.requestAnimationFrame(fitView);
   };
 
-  const readStepFile = (
-    file: File,
-    group: THREE.Group,
-    materialFor: () => THREE.MeshStandardMaterial,
-    quality: LocalStepQuality = "standard",
-  ) => new Promise<number>((resolve, reject) => {
-    const worker = new Worker("/step-worker.js");
-    stepWorkerRef.current = worker;
-    let meshCount = 0;
-    let lastProgressUpdate = 0;
-
-    const finish = () => {
-      worker.terminate();
-      if (stepWorkerRef.current === worker) stepWorkerRef.current = null;
-    };
-
-    worker.onmessage = (message) => {
-      const data = message.data;
-
-      if (data?.type === "status") {
-        if (data.phase === "starting") setLoadingStatus("正在启动 STEP 解析器");
-        if (data.phase === "parsing") setLoadingStatus("正在解析模型");
-        return;
-      }
-
-      if (data?.type === "start") {
-        setLoadingStatus(`正在处理 0 / ${data.total} 个部件`);
-        return;
-      }
-
-      if (data?.type === "mesh") {
-        if (!(data.positions instanceof ArrayBuffer) || data.positions.byteLength < 36 ||
-          !(data.indices instanceof ArrayBuffer) || data.indices.byteLength < 6) {
-          return;
-        }
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(data.positions), 3));
-        if (data.normals) {
-          geometry.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(data.normals), 3));
-        } else {
-          geometry.computeVertexNormals();
-        }
-        const indices = data.indexType === "uint16" ? new Uint16Array(data.indices) : new Uint32Array(data.indices);
-        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-
-        const mesh = new THREE.Mesh(geometry, materialFor());
-        mesh.name = data.name || "STEP 部件";
-        group.add(mesh);
-        meshCount += 1;
-
-        const now = performance.now();
-        if (now - lastProgressUpdate > 120 || meshCount === data.total) {
-          lastProgressUpdate = now;
-          setLoadingStatus(`正在处理 ${meshCount} / ${data.total} 个部件`);
-        }
-        return;
-      }
-
-      if (data?.type === "done") {
-        finish();
-        if (!meshCount) reject(new Error("模型已读取，但没有生成可显示的外观网格。"));
-        else resolve(meshCount);
-        return;
-      }
-
-      if (data?.type === "error") {
-        finish();
-        reject(new Error(data.message || "STEP 文件读取失败。"));
-      }
-    };
-
-    worker.onerror = () => {
-      finish();
-      reject(new Error("STEP 解析意外中断。这个文件可能超过了手机浏览器可用内存。"));
-    };
-
-    const megabytes = file.size / 1024 / 1024;
-    const params = quality === "lite"
-      ? megabytes > 120
-        ? { linearDeflection: 0.01, angularDeflection: 0.9 }
-        : megabytes > 60
-          ? { linearDeflection: 0.006, angularDeflection: 0.75 }
-          : { linearDeflection: 0.004, angularDeflection: 0.65 }
-      : megabytes > 30
-        ? { linearDeflection: 0.003, angularDeflection: 0.5 }
-        : { linearDeflection: 0.0015, angularDeflection: 0.5 };
-
-    worker.postMessage({
-      type: "parse",
-      file,
-      params: {
-        linearUnit: "millimeter",
-        linearDeflectionType: "bounding_box_ratio",
-        ...params,
-      },
-    });
-  });
 
   const cloudApiOrigin = () => location.hostname.endsWith("github.io") ? CLOUD_SITE_ORIGIN : location.origin;
 
@@ -745,10 +666,18 @@ export default function Home() {
       setWireframe(false);
     }
     setLoadingStatus(stepQuality === "lite" && isStep ? "正在生成极简外观" : "正在读取文件");
-    setLoadingNote(stepQuality === "lite" && isStep
-      ? "采用较粗网格并关闭结构线，全程不会上传"
-      : "文件只在本机处理，不会上传");
+    setLoadingNote(stepQuality === "compatibility" && isStep
+      ? "整文件兼容读取可能占用较多内存；全程不会上传"
+      : stepQuality === "lite" && isStep
+      ? "分批生成较粗网格，边读边显示；全程不会上传"
+      : "文件只在本机处理；大文件分批显示，不会上传");
     setLoadingProgress(null);
+    const controller = new AbortController();
+    localAbortRef.current = controller;
+    autoFitRef.current = true;
+    const group = new THREE.Group();
+    group.name = file.name;
+    let meshCount = 0;
     await new Promise((resolve) => window.setTimeout(resolve, 60));
 
     try {
@@ -763,14 +692,43 @@ export default function Home() {
         if (gridRef.current) gridRef.current.visible = false;
       }
 
-      const group = new THREE.Group();
-      group.name = file.name;
-      let meshCount = 0;
       const materialFor = () => makeMaterial(modelColor, materialPreset, wireframe);
 
       if (isStep) {
-        const safeMaterialFor = () => makeMaterial(modelColor, materialPreset, isLargeStep ? false : wireframe);
-        meshCount = await readStepFile(file, group, safeMaterialFor, stepQuality);
+        const material = makeMaterial(modelColor, materialPreset, isLargeStep ? false : wireframe);
+        try {
+          await loadLocalStep(file, stepQuality, controller.signal, (data) => {
+            const positions = new Float32Array(data.positions);
+            const indices = data.indexType === "uint16" ? new Uint16Array(data.indices) : new Uint32Array(data.indices);
+            if (positions.length < 9 || positions.length % 3 || indices.length < 3 || indices.length % 3) throw new Error("解析结果缺少有效曲面。");
+            for (const value of positions) if (!Number.isFinite(value)) throw new Error("解析结果包含无效坐标。");
+            for (const index of indices) if (index >= positions.length / 3) throw new Error("解析结果包含无效面索引。");
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+            geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+            if (data.normals && data.normals.byteLength === data.positions.byteLength) {
+              geometry.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(data.normals), 3));
+            } else geometry.computeVertexNormals();
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.name = data.name || "STEP 曲面";
+            group.add(mesh);
+            meshCount++;
+            if (meshCount === 1) {
+              scene.add(group);
+              modelRef.current = group;
+              setUpAxis("y");
+              setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: stepQuality, partial: true });
+              fitView();
+            }
+          }, (status, progress, batchDone) => {
+            setLoadingStatus(status);
+            setLoadingProgress(progress);
+            if (batchDone) {
+              setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: stepQuality, partial: true });
+              if (autoFitRef.current) fitView();
+            }
+          });
+        } finally { if (!meshCount) material.dispose(); }
       } else if (extension === "stl") {
         const buffer = await file.arrayBuffer();
         const geometry = new STLLoader().parse(buffer);
@@ -826,20 +784,23 @@ export default function Home() {
       setUpAxis("y");
       setOrientationOpen(false);
       setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: isStep ? stepQuality : undefined });
-      window.setTimeout(fitView, 0);
+      if (autoFitRef.current) window.setTimeout(fitView, 0);
     } catch (caught) {
-      stepWorkerRef.current?.terminate();
-      stepWorkerRef.current = null;
+      controller.abort();
+      const wasCancelled = caught instanceof DOMException && caught.name === "AbortError";
       const message = caught instanceof Error ? caught.message : "文件读取失败，请换一个模型文件重试。";
-      const isLargeLocalStep = (extension === "stp" || extension === "step") && file.size >= LARGE_STEP_THRESHOLD;
-      if (isLargeLocalStep) {
-        setError(`手机没有成功打开这个大文件，文件没有上传。你可以在下方改用云端快速打开。${message ? `（${message}）` : ""}`);
-        setCloudCandidate(file);
-      } else {
-        setError(message);
+      if (modelRef.current === group && meshCount) {
+        setModelInfo({ name: file.name, size: readableSize(file.size), meshes: meshCount, quality: stepQuality, partial: true });
+        setError(wasCancelled ? "已停止读取。当前仅显示已加载的部分，不是完整模型。" : `模型未完整读取，已保留能显示的部分。${message}`);
+      } else if (!wasCancelled) {
+        disposeModel(group);
+        setError(`${message} 文件没有上传。`);
+        if (isStep && file.size >= 12 * 1024 * 1024) setCloudCandidate(file);
       }
     } finally {
+      if (localAbortRef.current === controller) localAbortRef.current = null;
       setLoading(false);
+      setLoadingProgress(null);
     }
   };
 
@@ -862,14 +823,14 @@ export default function Home() {
     await openFileLocally(file);
   };
 
-  const chooseLargeStepMethod = (method: "local" | "lite" | "cloud") => {
+  const chooseLargeStepMethod = (method: "local" | "lite" | "compatibility" | "cloud") => {
     if (largeFileDecisionRef.current || !cloudCandidate) return;
     largeFileDecisionRef.current = true;
     const file = cloudCandidate;
     setCloudCandidate(null);
     const task = method === "cloud"
       ? startCloudConversion(file)
-      : openFileLocally(file, method === "lite" ? "lite" : "standard");
+      : openFileLocally(file, method === "local" ? "standard" : method);
     void task.finally(() => {
       largeFileDecisionRef.current = false;
     });
@@ -1129,7 +1090,7 @@ export default function Home() {
         )}
 
         {loading && (
-          <div className="loading-card" role="status" aria-live="polite">
+          <div className={`loading-card ${modelInfo ? "progressive-loading" : ""}`} role="status" aria-live="polite">
             <span className="loader" />
             <strong>{loadingStatus}</strong>
             <span className="loading-note">{loadingNote}</span>
@@ -1138,6 +1099,7 @@ export default function Home() {
                 <span style={{ width: `${loadingProgress}%` }} />
               </div>
             )}
+            {localAbortRef.current && <button className="stop-loading" type="button" onClick={() => localAbortRef.current?.abort()}>停止读取{modelInfo ? "，保留已显示部分" : ""}</button>}
           </div>
         )}
 
@@ -1147,17 +1109,17 @@ export default function Home() {
               <span className="cloud-dialog-icon"><CloudUpload aria-hidden="true" /></span>
               <h2 id="cloud-dialog-title">这个大文件怎么打开？</h2>
               <p className="cloud-file-name" title={cloudCandidate.name}>{cloudCandidate.name}</p>
-              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。原来能在手机打开的图纸请选择“正常本地”；更大的图纸可以试“极简预览”。</p>
+              <p>这个 STEP 有 {readableSize(cloudCandidate.size)}。建议分批本地打开，边读边显示；极简预览会降低曲面精细度。</p>
               <div className="privacy-note">
-                <strong>两种本地方式都不会上传</strong>
-                <span>极简预览会降低曲面精细度并关闭结构线；打开后仍可重新开启结构线。只有选择云端时图纸才会上传。</span>
+                <strong>本地读取都不会上传</strong>
+                <span>按曲面分批释放内存，保留原装配位置。只有选择云端时图纸才会上传。整文件兼容方式可能占用较多内存。</span>
               </div>
               <div className="cloud-dialog-actions">
                 <button
                   type="button"
                   onClick={() => chooseLargeStepMethod("local")}
                 >
-                  正常本地打开
+                  分批本地打开
                 </button>
                 <button
                   className="primary"
@@ -1166,6 +1128,7 @@ export default function Home() {
                 >
                   极简本地预览
                 </button>
+                <button type="button" onClick={() => chooseLargeStepMethod("compatibility")}>整文件兼容读取</button>
                 <button
                   className="cloud"
                   type="button"
@@ -1191,7 +1154,7 @@ export default function Home() {
           <div className="model-info">
             <div>
               <strong title={modelInfo.name}>{modelInfo.name}</strong>
-              <span>{modelInfo.meshes} 个部件 · {modelInfo.size}{modelInfo.quality === "lite" ? " · 极简预览" : ""}</span>
+              <span>{modelInfo.meshes} 个网格 · {modelInfo.size}{modelInfo.quality === "lite" ? " · 极简预览" : ""}{modelInfo.partial ? " · 尚未完整" : ""}</span>
             </div>
             <button type="button" onClick={closeModel} aria-label="关闭当前模型" title="关闭当前模型">
               <X aria-hidden="true" />

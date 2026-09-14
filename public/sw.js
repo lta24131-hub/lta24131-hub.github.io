@@ -1,4 +1,4 @@
-const CACHE_NAME = "step-viewer-v10";
+const CACHE_NAME = "step-viewer-v11";
 const CORE_URLS = [
   "/",
   "/manifest.webmanifest",
@@ -7,6 +7,9 @@ const CORE_URLS = [
   "/icon-192.png",
   "/icon-512.png",
   "/step-worker.js",
+  "/step-worker.js?v=11",
+  "/step-split-worker.js?v=11",
+  "/step-partition.js?v=11",
   "/occt/occt-import-js.js",
   "/occt/occt-import-js.wasm"
 ];
@@ -14,10 +17,11 @@ const CORE_URLS = [
 async function cacheOne(cache, url) {
   try {
     const response = await fetch(url, { cache: "reload", credentials: "same-origin" });
-    if (response.ok) await cache.put(url, response);
+    if (response.ok) { await cache.put(url, response); return true; }
   } catch {
     // A later online launch will fill anything unavailable during installation.
   }
+  return Boolean(await cache.match(url));
 }
 
 self.addEventListener("install", (event) => {
@@ -41,11 +45,11 @@ self.addEventListener("message", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
     const urls = event.data.urls.filter((value) => {
-      try { return new URL(value, self.location.origin).origin === self.location.origin; }
+      try { const url = new URL(value, self.location.origin); return url.origin === self.location.origin && !url.pathname.startsWith("/api/"); }
       catch { return false; }
     });
-    await Promise.all(urls.map((url) => cacheOne(cache, url)));
-    event.ports?.[0]?.postMessage({ ok: true });
+    const results = await Promise.all(urls.map((url) => cacheOne(cache, url)));
+    event.ports?.[0]?.postMessage({ ok: results.every(Boolean) });
   })());
 });
 

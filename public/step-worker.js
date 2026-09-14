@@ -8,11 +8,11 @@ function sendError(error) {
 }
 
 self.addEventListener("message", async (event) => {
-  if (event.data?.type !== "parse" || !(event.data.file instanceof Blob)) return;
+  if (event.data?.type !== "parse") return;
 
   try {
     self.postMessage({ type: "status", phase: "reading" });
-    let buffer = await event.data.file.arrayBuffer();
+    let buffer = event.data.buffer instanceof ArrayBuffer ? event.data.buffer : await event.data.file.arrayBuffer();
     let content = new Uint8Array(buffer);
 
     self.postMessage({ type: "status", phase: "starting" });
@@ -37,11 +37,39 @@ self.addEventListener("message", async (event) => {
     result.meshes = null;
 
     if (!meshes.length) {
-      throw new Error("模型已读取，但没有生成可显示的外观网格。请改用正常本地打开或云端处理。");
+      throw new Error("当前数据没有生成可显示的外观网格；请尝试分批本地打开或整文件兼容读取。");
     }
 
     const total = meshes.length;
     self.postMessage({ type: "start", total });
+
+    // All positions already include OCCT's assembly placements. Packing a batch
+    // avoids thousands of draw calls on mobile without changing any coordinates.
+    if (event.data.mergeMeshes && total) {
+      const vertexValues = meshes.reduce((sum, mesh) => sum + mesh.attributes.position.array.length, 0);
+      const indexValues = meshes.reduce((sum, mesh) => sum + mesh.index.array.length, 0);
+      const positions = new Float32Array(vertexValues);
+      const hasNormals = meshes.every(mesh => mesh.attributes.normal?.array?.length === mesh.attributes.position.array.length);
+      const normals = hasNormals ? new Float32Array(vertexValues) : null;
+      const IndexArray = vertexValues / 3 <= 65535 ? Uint16Array : Uint32Array;
+      const indices = new IndexArray(indexValues);
+      let vertexOffset = 0, indexOffset = 0;
+      for (let i = 0; i < total; i++) {
+        const mesh = meshes[i];
+        const values = mesh.attributes.position.array;
+        positions.set(values, vertexOffset);
+        if (normals) normals.set(mesh.attributes.normal.array, vertexOffset);
+        for (let j = 0; j < mesh.index.array.length; j++) indices[indexOffset + j] = mesh.index.array[j] + vertexOffset / 3;
+        vertexOffset += values.length;
+        indexOffset += mesh.index.array.length;
+        meshes[i] = null;
+      }
+      const transfer = [positions.buffer, indices.buffer];
+      if (normals) transfer.push(normals.buffer);
+      self.postMessage({ type: "mesh", name: "STEP 曲面批次", positions: positions.buffer, normals: normals?.buffer ?? null, indices: indices.buffer, indexType: IndexArray === Uint16Array ? "uint16" : "uint32" }, transfer);
+      self.postMessage({ type: "done", total: 1 });
+      return;
+    }
 
     for (let meshIndex = 0; meshIndex < total; meshIndex += 1) {
       const source = meshes[meshIndex];
