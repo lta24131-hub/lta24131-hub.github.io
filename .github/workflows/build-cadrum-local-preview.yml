@@ -22,7 +22,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Prepare the surface-only CAD engine
         run: |
-          git clone --depth 1 https://github.com/lzpel/cadrum.git cadrum-src
+          git init cadrum-src
+          git -C cadrum-src remote add origin https://github.com/lzpel/cadrum.git
+          git -C cadrum-src fetch --depth 1 origin 8788df70c60b986b5ab387edb75a2f6f341a8c7a
+          git -C cadrum-src checkout --detach FETCH_HEAD
           git -C cadrum-src apply ../cadrum-preview.patch
       - name: Build the isolated WASM engine
         run: make deploy-cross
