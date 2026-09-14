@@ -266,6 +266,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 }
 .structure-option > button.enabled { border-color: rgba(86, 202, 255, .55); background: rgba(39, 150, 205, .72); }
 .structure-option > button.enabled > span { transform: translateX(20px); background: #eaf9ff; }
+.structure-option > button:disabled { opacity: .45; cursor: not-allowed; }
 
 .export-light-button {
   display: flex;
@@ -531,7 +532,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 
 .error-card {
   position: absolute;
-  z-index: 7;
+  z-index: 25;
   left: 14px;
   right: 14px;
   top: 14px;

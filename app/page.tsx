@@ -290,7 +290,12 @@ export default function Home() {
     controls.touches.ONE = THREE.TOUCH.ROTATE;
     controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     controlsRef.current = controls;
-    controls.addEventListener("start", () => { autoFitRef.current = false; });
+    let controlsActive = false;
+    controls.addEventListener("start", () => {
+      controlsActive = true;
+      autoFitRef.current = false;
+    });
+    controls.addEventListener("end", () => { controlsActive = false; });
 
     const hemisphere = new THREE.HemisphereLight(0xccecff, 0x17212b, 2.3);
     scene.add(hemisphere);
@@ -320,10 +325,17 @@ export default function Home() {
     resize();
 
     let frame = 0;
+    let loadingFrame = 0;
     const render = () => {
+      frame = requestAnimationFrame(render);
+      if (localAbortRef.current && !controlsActive) {
+        loadingFrame = (loadingFrame + 1) % 12;
+        if (loadingFrame !== 0) return;
+      } else {
+        loadingFrame = 0;
+      }
       controls.update();
       renderer.render(scene, camera);
-      frame = requestAnimationFrame(render);
     };
     render();
 
@@ -884,6 +896,7 @@ export default function Home() {
   }, []);
 
   const offlineLabel = offlineState === "ready" ? "离线可用" : offlineState === "preparing" ? "准备离线功能" : "需联网重试";
+  const fastPreviewStillLoading = loading && modelInfo?.quality === "lite";
 
   return (
     <main className={`app-shell ${backgroundMode === "light" ? "light-background" : "dark-background"}`}>
@@ -1024,14 +1037,16 @@ export default function Home() {
             <div className="appearance-section structure-option">
               <div>
                 <strong>显示结构线</strong>
-                <span>可叠加在当前材质上</span>
+                <span>{fastPreviewStillLoading ? "快速预览完成后可开启" : "可叠加在当前材质上"}</span>
               </div>
               <button
                 className={structureLines ? "enabled" : ""}
                 type="button"
                 onClick={() => setStructureLines((value) => !value)}
+                disabled={fastPreviewStillLoading}
                 role="switch"
                 aria-checked={structureLines}
+                aria-label="显示结构线"
               >
                 <span />
               </button>
