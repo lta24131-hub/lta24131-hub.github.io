@@ -4,6 +4,7 @@ import {
   Box,
   Download,
   FolderOpen,
+  Expand,
   Maximize2,
   Moon,
   Orbit,
@@ -25,6 +26,8 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { loadLocalStep } from "@/lib/local-step";
+import { buildStructureLines } from "@/lib/structure-lines";
+import { useModelFullscreen } from "@/lib/use-model-fullscreen";
 
 type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
 type UpAxis = "x" | "y" | "z" | "custom";
@@ -76,30 +79,17 @@ function makeMaterial(color: string, presetKey: MaterialPresetKey, wireframe: bo
 function updateStructureLines(model: THREE.Group, visible: boolean, modelColor: string) {
   const baseColor = new THREE.Color(modelColor);
   const brightness = baseColor.r * 0.299 + baseColor.g * 0.587 + baseColor.b * 0.114;
-  const lineColor = brightness < 0.3 ? 0xe9f7ff : 0x0a1824;
+  const lineColor = brightness < 0.055 ? 0xaab3bd : 0x20262d;
 
   model.traverse((object) => {
-    if (!(object instanceof THREE.Mesh)) return;
-
-    let lines = object.children.find((child) => child.userData.structureLines === true) as THREE.LineSegments | undefined;
-    if (visible && !lines) {
-      const geometry = new THREE.EdgesGeometry(object.geometry, 18);
-      const material = new THREE.LineBasicMaterial({ color: lineColor, transparent: true, opacity: 0.82 });
-      lines = new THREE.LineSegments(geometry, material);
-      lines.name = "结构线";
-      lines.renderOrder = 2;
-      lines.userData.structureLines = true;
-      object.add(lines);
-    }
-
-    if (lines) {
-      lines.visible = visible;
-      const materials = Array.isArray(lines.material) ? lines.material : [lines.material];
+    if (object instanceof THREE.LineSegments && object.userData.structureLines) {
+      object.visible = visible;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
       materials.forEach((material) => {
         if (material instanceof THREE.LineBasicMaterial) material.color.setHex(lineColor);
       });
     }
-
+    if (!(object instanceof THREE.Mesh)) return;
     const materials = Array.isArray(object.material) ? object.material : [object.material];
     materials.forEach((material) => {
       if (!(material instanceof THREE.MeshStandardMaterial)) return;
@@ -128,6 +118,7 @@ async function cacheForOffline(registration: ServiceWorkerRegistration) {
     location.origin + "/step-worker.js?v=14",
     location.origin + "/step-split-worker.js?v=14",
     location.origin + "/step-partition.js?v=14",
+    location.origin + "/structure-worker.js?v=15",
     location.origin + "/occt/occt-import-js.js",
     location.origin + "/occt/occt-import-js.wasm",
   ]);
@@ -166,6 +157,9 @@ export default function Home() {
   const modelRef = useRef<THREE.Group | null>(null);
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const localAbortRef = useRef<AbortController | null>(null);
+  const edgesAbortRef = useRef<AbortController | null>(null);
+  const appearanceRef = useRef({ modelColor: DEFAULT_MODEL_COLOR, structureLines: false });
+  const fullscreenRef = useRef(false);
   const autoFitRef = useRef(true);
   const invalidateRef = useRef<() => void>(() => {});
   const [offlineState, setOfflineState] = useState<"preparing" | "ready" | "failed">("preparing");
@@ -183,8 +177,12 @@ export default function Home() {
   const [modelColor, setModelColor] = useState(DEFAULT_MODEL_COLOR);
   const [materialPreset, setMaterialPreset] = useState<MaterialPresetKey>("standard");
   const [structureLines, setStructureLines] = useState(false);
+  const [edgeProgress, setEdgeProgress] = useState<number | null>(null);
   const [upAxis, setUpAxis] = useState<UpAxis>("y");
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>("dark");
+  const { fullscreen, enter: enterFullscreen, leave: leaveFullscreen } = useModelFullscreen(stageRef);
+  appearanceRef.current = { modelColor, structureLines };
+  fullscreenRef.current = fullscreen;
 
   const fitView = useCallback(() => {
     const camera = cameraRef.current;
@@ -214,7 +212,7 @@ export default function Home() {
     if (grid) {
       grid.position.set(center.x, box.min.y, center.z);
       grid.scale.setScalar(Math.max(maxDimension / 10, 0.1));
-      grid.visible = true;
+      grid.visible = !fullscreenRef.current;
     }
     invalidateRef.current();
   }, []);
@@ -325,7 +323,42 @@ export default function Home() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => () => localAbortRef.current?.abort(), []);
+  useEffect(() => () => { localAbortRef.current?.abort(); edgesAbortRef.current?.abort(); }, []);
+
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.visible = Boolean(modelRef.current) && !fullscreen;
+    if (fullscreen) { setAppearanceOpen(false); setOrientationOpen(false); }
+    invalidateRef.current();
+  }, [fullscreen]);
+
+  useEffect(() => {
+    const model = modelRef.current;
+    if (!model || loading || !structureLines || model.userData.structureLinesReady) return;
+    const controller = new AbortController();
+    edgesAbortRef.current = controller;
+    setEdgeProgress(0);
+    void buildStructureLines(model, controller.signal, setEdgeProgress).then(positions => {
+      if (controller.signal.aborted || modelRef.current !== model) return;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      const material = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.68, depthTest: true, depthWrite: false, toneMapped: false });
+      const lines = new THREE.LineSegments(geometry, material);
+      lines.name = "结构线";
+      lines.renderOrder = 2;
+      lines.userData.structureLines = true;
+      model.add(lines);
+      model.userData.structureLinesReady = true;
+      updateStructureLines(model, appearanceRef.current.structureLines, appearanceRef.current.modelColor);
+      invalidateRef.current();
+    }).catch(error => {
+      if (controller.signal.aborted || modelRef.current !== model) return;
+      setStructureLines(false);
+      setError(error instanceof Error ? error.message : "结构线计算失败，实体模型不受影响。");
+    }).finally(() => {
+      if (edgesAbortRef.current === controller) { edgesAbortRef.current = null; setEdgeProgress(null); }
+    });
+    return () => controller.abort();
+  }, [structureLines, loading, modelInfo?.name]);
 
   useEffect(() => {
     const model = modelRef.current;
@@ -394,6 +427,8 @@ export default function Home() {
   };
 
   const closeModel = () => {
+    edgesAbortRef.current?.abort();
+    leaveFullscreen();
     localAbortRef.current?.abort();
     setCanStopLocalLoad(false);
     const scene = sceneRef.current;
@@ -441,7 +476,7 @@ export default function Home() {
 
   const exportLightweightModel = async () => {
     const model = modelRef.current;
-    if (!model || !modelInfo || exporting) return;
+    if (!model || !modelInfo || exporting || edgeProgress !== null) return;
 
     const hiddenLines: THREE.LineSegments[] = [];
     setExporting(true);
@@ -486,6 +521,7 @@ export default function Home() {
       return;
     }
 
+    edgesAbortRef.current?.abort();
     setError("");
     setLoading(true);
     const isStep = extension === "stp" || extension === "step";
@@ -654,7 +690,7 @@ export default function Home() {
   const stepStillLoading = loading && modelInfo?.partial === true;
 
   return (
-    <main className={`app-shell ${backgroundMode === "light" ? "light-background" : "dark-background"}`}>
+    <main className={`app-shell ${backgroundMode === "light" ? "light-background" : "dark-background"} ${fullscreen ? "model-only" : ""}`}>
       <header className="topbar">
         <div className="brand" aria-label="3D 离线看图">
           <span className="brand-mark"><Box aria-hidden="true" /></span>
@@ -676,8 +712,12 @@ export default function Home() {
       <section ref={stageRef} className="viewer-stage" aria-label="三维模型查看区域">
         <div className="technical-grid" aria-hidden="true" />
         <div ref={canvasHostRef} className="canvas-host" />
+        {fullscreen && <button className="fullscreen-close" type="button" onClick={leaveFullscreen} aria-label="退出全屏" title="退出全屏" autoFocus><X aria-hidden="true" /></button>}
 
         <div className="tool-rail" aria-label="视图工具">
+          <button type="button" onClick={enterFullscreen} disabled={!modelInfo || loading} aria-label="全屏查看模型" title="全屏查看模型">
+            <Expand aria-hidden="true" />
+          </button>
           <button
             type="button"
             onClick={() => setBackgroundMode((value) => value === "dark" ? "light" : "dark")}
@@ -793,7 +833,7 @@ export default function Home() {
             <div className="appearance-section structure-option">
               <div>
                 <strong>显示结构线</strong>
-                <span>{stepStillLoading ? "读取完成后可开启" : "可叠加在当前材质上"}</span>
+                <span role="status">{stepStillLoading ? "读取完成后可开启" : edgeProgress !== null ? `正在整理结构线 ${edgeProgress}%` : "轮廓与折角 · 可叠加在任意材质上"}</span>
               </div>
               <button
                 className={structureLines ? "enabled" : ""}
@@ -808,7 +848,7 @@ export default function Home() {
               </button>
             </div>
 
-            <button className="export-light-button" type="button" onClick={exportLightweightModel} disabled={exporting}>
+            <button className="export-light-button" type="button" onClick={exportLightweightModel} disabled={exporting || edgeProgress !== null}>
               <Download aria-hidden="true" />
               <span>
                 <strong>{exporting ? "正在生成轻量版" : "保存轻量 GLB"}</strong>

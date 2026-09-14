@@ -127,6 +127,39 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .canvas-host { position: absolute; inset: 0; z-index: 1; }
 .canvas-host canvas { display: block; width: 100%; height: 100%; outline: none; }
 
+.model-only .topbar,
+.model-only .viewer-stage > :not(.canvas-host):not(.fullscreen-close) { display: none; }
+.model-only .viewer-stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  z-index: 100;
+  background: #07111f;
+}
+.model-only.light-background .viewer-stage { background: #e7eef3; }
+.fullscreen-close {
+  position: absolute;
+  z-index: 4;
+  top: calc(8px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #a6b3bf;
+  background: transparent;
+  cursor: pointer;
+}
+.fullscreen-close svg { width: 18px; height: 18px; }
+.light-background .fullscreen-close { color: #4d5d6b; }
+.fullscreen-close:focus-visible { outline: 2px solid #4ba7d3; outline-offset: -5px; }
+.fullscreen-close:active { background: rgba(128, 145, 159, .15); }
+
 .tool-rail { position: absolute; z-index: 3; top: 16px; right: 14px; display: grid; gap: 8px; }
 
 .tool-rail button {

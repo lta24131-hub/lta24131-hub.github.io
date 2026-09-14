@@ -1,4 +1,4 @@
-const CACHE_NAME = "step-viewer-v14";
+const CACHE_NAME = "step-viewer-v15";
 const CORE_URLS = [
   "/",
   "/manifest.webmanifest",
@@ -10,6 +10,7 @@ const CORE_URLS = [
   "/step-worker.js?v=14",
   "/step-split-worker.js?v=14",
   "/step-partition.js?v=14",
+  "/structure-worker.js?v=15",
   "/occt/occt-import-js.js",
   "/occt/occt-import-js.wasm"
 ];
