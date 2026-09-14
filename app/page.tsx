@@ -5,13 +5,16 @@ import {
   FolderOpen,
   Maximize2,
   Orbit,
+  Palette,
   PanelsTopLeft,
   RefreshCw,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 
@@ -30,6 +33,17 @@ type OcctResult = { success: boolean; meshes?: OcctMesh[] };
 type OcctApi = {
   ReadStepFile: (content: Uint8Array, params: Record<string, unknown> | null) => OcctResult;
 };
+
+type MaterialPresetKey = "standard" | "matte" | "metal" | "gloss";
+
+const MATERIAL_PRESETS: Record<MaterialPresetKey, { label: string; metalness: number; roughness: number; envMapIntensity: number }> = {
+  standard: { label: "标准", metalness: 0.08, roughness: 0.5, envMapIntensity: 1 },
+  matte: { label: "哑光", metalness: 0, roughness: 0.88, envMapIntensity: 0.72 },
+  metal: { label: "金属", metalness: 0.9, roughness: 0.26, envMapIntensity: 1.45 },
+  gloss: { label: "高光", metalness: 0.12, roughness: 0.12, envMapIntensity: 1.2 },
+};
+
+const COLOR_SWATCHES = ["#70ADD6", "#D7DEE5", "#F2A65A", "#E85D68", "#54B887", "#735DD0"];
 
 declare global {
   interface Window {
@@ -78,18 +92,15 @@ function readableSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function colorKey(color: number[]) {
-  return color.slice(0, 3).map((value) => Math.round(value * 255)).join("-");
-}
-
-function makeMaterial(color: number[], wireframe: boolean, vertexColors = false) {
+function makeMaterial(color: string, presetKey: MaterialPresetKey, wireframe: boolean) {
+  const preset = MATERIAL_PRESETS[presetKey];
   return new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color[0] ?? 0.58, color[1] ?? 0.72, color[2] ?? 0.82),
-    metalness: 0.08,
-    roughness: 0.55,
+    color,
+    metalness: preset.metalness,
+    roughness: preset.roughness,
+    envMapIntensity: preset.envMapIntensity,
     side: THREE.DoubleSide,
     wireframe,
-    vertexColors,
   });
 }
 
@@ -139,6 +150,9 @@ export default function Home() {
   const [error, setError] = useState("");
   const [modelInfo, setModelInfo] = useState<{ name: string; size: string; meshes: number } | null>(null);
   const [wireframe, setWireframe] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [modelColor, setModelColor] = useState("#70ADD6");
+  const [materialPreset, setMaterialPreset] = useState<MaterialPresetKey>("standard");
 
   const fitView = useCallback(() => {
     const camera = cameraRef.current;
@@ -189,6 +203,13 @@ export default function Home() {
     renderer.setClearColor(0x000000, 0);
     host.appendChild(renderer.domElement);
 
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnvironment = new RoomEnvironment();
+    const environment = pmremGenerator.fromScene(roomEnvironment, 0.04).texture;
+    roomEnvironment.dispose();
+    pmremGenerator.dispose();
+    scene.environment = environment;
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -236,6 +257,7 @@ export default function Home() {
       cancelAnimationFrame(frame);
       observer.disconnect();
       controls.dispose();
+      environment.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -273,6 +295,25 @@ export default function Home() {
     });
   }, [wireframe]);
 
+  useEffect(() => {
+    const model = modelRef.current;
+    if (!model) return;
+    const preset = MATERIAL_PRESETS[materialPreset];
+    model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach((material) => {
+        if (!(material instanceof THREE.MeshStandardMaterial)) return;
+        material.color.set(modelColor);
+        material.metalness = preset.metalness;
+        material.roughness = preset.roughness;
+        material.envMapIntensity = preset.envMapIntensity;
+        material.vertexColors = false;
+        material.needsUpdate = true;
+      });
+    });
+  }, [materialPreset, modelColor]);
+
   const disposeModel = (model: THREE.Group) => {
     model.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -280,6 +321,20 @@ export default function Home() {
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       materials.forEach((material) => material.dispose());
     });
+  };
+
+  const closeModel = () => {
+    const scene = sceneRef.current;
+    const model = modelRef.current;
+    if (scene && model) {
+      scene.remove(model);
+      disposeModel(model);
+    }
+    modelRef.current = null;
+    if (gridRef.current) gridRef.current.visible = false;
+    setModelInfo(null);
+    setAppearanceOpen(false);
+    setError("");
   };
 
   const openFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -310,16 +365,7 @@ export default function Home() {
       const group = new THREE.Group();
       group.name = file.name;
       let meshCount = 0;
-      const materialCache = new Map<string, THREE.MeshStandardMaterial>();
-      const materialFor = (color: number[], vertexColors = false) => {
-        const key = `${colorKey(color)}-${vertexColors ? "v" : "u"}`;
-        let material = materialCache.get(key);
-        if (!material) {
-          material = makeMaterial(color, wireframe, vertexColors);
-          materialCache.set(key, material);
-        }
-        return material;
-      };
+      const materialFor = () => makeMaterial(modelColor, materialPreset, wireframe);
 
       if (extension === "stp" || extension === "step") {
         const occt = await loadOcct();
@@ -342,30 +388,7 @@ export default function Home() {
           }
           geometry.setIndex(source.index.array);
 
-          const baseColor = source.color ?? [0.44, 0.68, 0.84];
-          const materials: THREE.MeshStandardMaterial[] = [];
-          const materialIndices = new Map<string, number>();
-          const addMaterial = (color: number[]) => {
-            const key = colorKey(color);
-            const previous = materialIndices.get(key);
-            if (previous !== undefined) return previous;
-            const index = materials.length;
-            materials.push(materialFor(color));
-            materialIndices.set(key, index);
-            return index;
-          };
-
-          const defaultIndex = addMaterial(baseColor);
-          if (source.brep_faces?.length) {
-            for (const face of source.brep_faces) {
-              const materialIndex = addMaterial(face.color ?? baseColor);
-              geometry.addGroup(face.first * 3, (face.last - face.first + 1) * 3, materialIndex);
-            }
-          } else {
-            geometry.addGroup(0, source.index.array.length, defaultIndex);
-          }
-
-          const mesh = new THREE.Mesh(geometry, materials);
+          const mesh = new THREE.Mesh(geometry, materialFor());
           mesh.name = source.name ?? "STEP 部件";
           group.add(mesh);
           meshCount += 1;
@@ -373,8 +396,7 @@ export default function Home() {
       } else if (extension === "stl") {
         const geometry = new STLLoader().parse(buffer);
         if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
-        const hasVertexColors = Boolean(geometry.getAttribute("color"));
-        const mesh = new THREE.Mesh(geometry, materialFor([0.44, 0.68, 0.84], hasVertexColors));
+        const mesh = new THREE.Mesh(geometry, materialFor());
         mesh.name = file.name;
         group.add(mesh);
         meshCount = 1;
@@ -385,12 +407,8 @@ export default function Home() {
           meshCount += 1;
           if (!object.geometry.getAttribute("normal")) object.geometry.computeVertexNormals();
           const originalMaterials = Array.isArray(object.material) ? object.material : [object.material];
-          const originalColor = originalMaterials.find((material) => "color" in material)?.color;
-          const color = originalColor instanceof THREE.Color
-            ? [originalColor.r, originalColor.g, originalColor.b]
-            : [0.44, 0.68, 0.84];
           originalMaterials.forEach((material) => material.dispose());
-          object.material = materialFor(color, Boolean(object.geometry.getAttribute("color")));
+          object.material = materialFor();
         });
         if (!meshCount) throw new Error("这个 OBJ 文件没有可显示的三维网格。");
         group.add(imported);
@@ -449,7 +467,75 @@ export default function Home() {
           >
             <PanelsTopLeft aria-hidden="true" />
           </button>
+          <button
+            type="button"
+            onClick={() => setAppearanceOpen((value) => !value)}
+            disabled={!modelInfo}
+            className={appearanceOpen ? "active" : ""}
+            aria-pressed={appearanceOpen}
+            aria-expanded={appearanceOpen}
+            aria-label="调整颜色和材质"
+            title="颜色和材质"
+          >
+            <Palette aria-hidden="true" />
+          </button>
         </div>
+
+        {modelInfo && appearanceOpen && (
+          <aside className="appearance-panel" aria-label="颜色和材质">
+            <div className="appearance-heading">
+              <strong>模型外观</strong>
+              <button type="button" onClick={() => setAppearanceOpen(false)} aria-label="关闭外观面板">×</button>
+            </div>
+
+            <div className="appearance-section">
+              <div className="appearance-label">
+                <span>整体颜色</span>
+                <span>{modelColor.toUpperCase()}</span>
+              </div>
+              <div className="color-controls">
+                <label className="color-picker" title="自定义颜色">
+                  <input
+                    type="color"
+                    value={modelColor}
+                    onChange={(event) => setModelColor(event.target.value.toUpperCase())}
+                    aria-label="自定义模型颜色"
+                  />
+                  <Palette aria-hidden="true" />
+                </label>
+                {COLOR_SWATCHES.map((color) => (
+                  <button
+                    key={color}
+                    className={`color-swatch ${modelColor === color ? "selected" : ""}`}
+                    type="button"
+                    style={{ backgroundColor: color }}
+                    onClick={() => setModelColor(color)}
+                    aria-label={`切换模型颜色为 ${color}`}
+                    aria-pressed={modelColor === color}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="appearance-section">
+              <div className="appearance-label"><span>材质效果</span></div>
+              <div className="material-grid">
+                {(Object.entries(MATERIAL_PRESETS) as [MaterialPresetKey, (typeof MATERIAL_PRESETS)[MaterialPresetKey]][]).map(([key, preset]) => (
+                  <button
+                    key={key}
+                    className={materialPreset === key ? "selected" : ""}
+                    type="button"
+                    onClick={() => setMaterialPreset(key)}
+                    aria-pressed={materialPreset === key}
+                  >
+                    <span className={`material-ball ${key}`} aria-hidden="true" />
+                    <span>{preset.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+        )}
 
         {!modelInfo && !loading && (
           <div className="empty-state">
@@ -481,8 +567,13 @@ export default function Home() {
 
         {modelInfo && (
           <div className="model-info">
-            <strong title={modelInfo.name}>{modelInfo.name}</strong>
-            <span>{modelInfo.meshes} 个部件 · {modelInfo.size}</span>
+            <div>
+              <strong title={modelInfo.name}>{modelInfo.name}</strong>
+              <span>{modelInfo.meshes} 个部件 · {modelInfo.size}</span>
+            </div>
+            <button type="button" onClick={closeModel} aria-label="关闭当前模型" title="关闭当前模型">
+              <X aria-hidden="true" />
+            </button>
           </div>
         )}
 
