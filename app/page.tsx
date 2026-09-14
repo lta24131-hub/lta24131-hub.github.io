@@ -520,7 +520,7 @@ export default function Home() {
             <span>{offlineLabel}</span>
           </div>
         </div>
-        <input ref={fileInputRef} className="hidden-input" type="file" accept=".stp,.step,.stl,.obj" onChange={openFile} />
+        <input ref={fileInputRef} className="hidden-input" type="file" onChange={openFile} />
       </header>
 
       <section ref={stageRef} className="viewer-stage" aria-label="三维模型查看区域">

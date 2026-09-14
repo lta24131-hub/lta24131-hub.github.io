@@ -1,4 +1,4 @@
-const CACHE_NAME = "step-viewer-v4";
+const CACHE_NAME = "step-viewer-v5";
 const CORE_URLS = [
   "/",
   "/manifest.webmanifest",
