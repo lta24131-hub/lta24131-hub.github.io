@@ -28,7 +28,7 @@ jobs:
           run_id=""
           for attempt in $(seq 1 80); do
             runs="$(curl --fail --silent --show-error -H "$auth" -H 'Accept: application/vnd.github+json' "$api/actions/workflows/build-cadrum-local-preview.yml/runs?branch=experiment%2Fcadrum-local-preview&per_page=10")"
-            run_id="$(jq -r '[.workflow_runs[] | select(.head_sha == "5c820dd9bb715bf485465fe618827b5ed40e8d26")][0].id // empty' <<<"$runs")"
+            run_id="$(jq -r '[.workflow_runs[] | select(.head_sha == "4637da0a4e1674f7a3897d2496792cbc698b70ab")][0].id // empty' <<<"$runs")"
             status="$(jq -r --argjson id "${run_id:-0}" '[.workflow_runs[] | select(.id == $id)][0].status // empty' <<<"$runs")"
             conclusion="$(jq -r --argjson id "${run_id:-0}" '[.workflow_runs[] | select(.id == $id)][0].conclusion // empty' <<<"$runs")"
             if [[ "$status" == "completed" ]]; then
@@ -53,4 +53,3 @@ jobs:
           git add .
           git commit -m "publish experimental incremental STEP engine"
           git push --force origin HEAD:experiment/cadrum-local-preview-dist
-
